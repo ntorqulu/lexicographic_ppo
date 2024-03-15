@@ -2,6 +2,7 @@ import numpy as np
 from torch import optim
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Categorical
 
 ACTIONS = [0, 1, 2, 3, 4, 5, 6]
 
@@ -43,6 +44,15 @@ class DNN(nn.Module):
         else:
             x = x.view((x.size(0),) + self.out_size)
         return x
+
+    # TODO: Change from get_action in IPPO to act following lmorl
+    def act(self, state):
+        probs = self.forward(state)
+        action = Categorical(probs).sample()
+        return ACTIONS[action.item()]
+
+
+
 
 
 class PolicyDNN(nn.Module):

@@ -22,8 +22,9 @@ if __name__ == '__main__':
     # initialize lexico_ppo agent
     agent = LexicoPPO(train_params=params, env=env)
     if prioritize_collecting_over_sharing:
-        mode = 5
-    else:
-        mode = 6
+        mode = 1  # first component positive, second negative
+    else:  # prioritize sharing over collecting
+        mode = 2  # first component negative, second positive
 
     # Train the agent
+    agent.train()  # without reset and set_agents for now

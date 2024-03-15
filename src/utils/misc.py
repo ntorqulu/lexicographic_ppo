@@ -4,6 +4,7 @@ from typing import Tuple, Optional, Dict, Union, List, Type
 
 import numpy as np
 import torch as th
+import random
 
 
 Tensor = th.Tensor
@@ -24,10 +25,12 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def set_seeds(seed: int, deterministic: Optional[bool]):
-    np.random.seed(seed)
+def set_seeds(seed: int):
+    random.seed(seed)
     th.manual_seed(seed)
-    th.backends.cudnn.deterministic = deterministic
+    np.random.seed(seed)
+    # TODO: add deterministic?
+    # th.backends.cudnn.deterministic = deterministic
 
 
 def set_torch(n_cpus: int, cuda: bool) -> th.device:
