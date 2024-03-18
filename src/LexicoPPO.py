@@ -1,7 +1,9 @@
 import collections
 import logging
+import time
 import warnings
 
+import numpy as np
 import torch.nn as nn
 
 from agent import make_network, Agent
@@ -33,7 +35,6 @@ class LexicoPPO:
         self.logger.setLevel(logging.DEBUG)
         # Add a console handler to the logger if it doesn't have one
         if len(self.logger.handlers) == 0:
-            print("Adding console handler")
             ch = logging.StreamHandler()
             ch.setLevel(logging.INFO)
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -49,6 +50,8 @@ class LexicoPPO:
 
         # Attributes
         self.r_agents = range(train_params.n_agents)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        self.run_name = f"{train_params.env_name}_{train_params.seed}_{timestamp}_{np.random.randint(0, 100)}"
         self.run_metrics = None
         self.update_metrics = {}
         self.sim_metrics = {}
@@ -66,6 +69,11 @@ class LexicoPPO:
 
         # Torch init
         self.device = set_torch(n_cpus=train_params.n_cpus, cuda=False)
+
+        # metrics
+        self.run_metrics = None
+        self.update_metrics = {}
+        self.sim_metrics = {}
 
         # Actor-critic
         self.n_updates = None
@@ -86,7 +94,6 @@ class LexicoPPO:
             # TODO: use custom buffer or ReplayBuffer?
             self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.device)
 
-        self.t = 0  # total number of frames observed
         self.discount = 0.99
         self.mu = [0.0 for _ in range(self.reward_size - 1)]
         self.j = [0.0 for _ in range(self.reward_size - 1)]
@@ -106,16 +113,8 @@ class LexicoPPO:
     def environment_setup(self):
         if self.env is None:
             raise ValueError("Environment is not set")
-        obs, info = self.env.reset()
-        # log the obs and info
-        self.logger.info(f"Observation: {obs}")
-        self.logger.info(f"Info: {info}")
-        # TODO: check environment compatible with the agent
         self.o_size = self.env.observation_space.sample().shape[0]
         self.a_size = self.env.action_space.n
-        # log the action and observation space
-        self.logger.info(f"Action space: {self.a_size}")
-        self.logger.info(f"Observation space: {self.o_size}")
 
     # Always reset and set_Agents to none for now
     def train(self):
@@ -123,33 +122,67 @@ class LexicoPPO:
         # set seed for training
         set_seeds(self.seed)
 
+        # Reset run metrics
+        self.run_metrics = {
+            'global_steps': 0, # total steps done in training
+            'global_episodes': 0, # total episodes done in training
+            'start_time': time.time(), # start time of the training
+            'avg_episode_rewards': collections.deque(maxlen=500), # average episode rewards
+            'agent_performance': {},
+            'mean_loss': collections.deque(maxlen=500),
+        }
+
         # 6 updates, each one consisting of 5 complete trajectories
         # tot_steps = 15000, batch_size = 2500
         # n_updates = 15000 // 2500 = 6
         # max_ep_length = 500
         # num_trajectories = 2500 // 500 = 5
         self.n_updates = self.tot_steps // self.batch_size
-        self.logger.info(f"Total number of updates: {self.n_updates}")
-        self.logger.info(f"Start training")
+
+        # log relevant information about the training
+        self.logger.info(f"Training {self.run_name}")
+        self.logger.info("----------------TRAINING----------------")
+        self.logger.info(f"Environment: {self.env}")
+        self.logger.info(f"Number of agents: {len(self.r_agents)}")
+        self.logger.info(f"Reward size: {self.reward_size}")
+        self.logger.info(f"Total steps: {self.tot_steps}")
+        self.logger.info(f"Batch size: {self.batch_size}")
+        self.logger.info(f"Max steps per episode: {self.max_ep_length}")
+        self.logger.info(f"Number of updates: {self.n_updates}")
+        self.logger.info(f"Number of hidden units: {self.h_size}")
+        self.logger.info(f"---------------------------------------")
+        self.logger.info(f"Learning rate: {self.learning_rate}")
+        self.logger.info(f"Discount factor: {self.discount}")
+        self.logger.info(f"---------------------------------------")
+        self.logger.info(f"KL weight: {self.kl_weight}")
+        self.logger.info(f"KL target: {self.kl_target}")
+        self.logger.info(f"---------------------------------------")
+        self.logger.info(f"Mu: {self.mu}")
+        self.logger.info(f"Beta: {self.beta}")
+        self.logger.info(f"Eta: {self.eta}")
+        self.logger.info(f"---------------------------------------")
+        self.logger.info(f"Seed: {self.seed}")
+
         for update in range(1, self.n_updates + 1):
             self.logger.info(f"Update {update}/{self.n_updates}")
-            print("rollout")
+            self.run_metrics["sim_start_time"] = time.time()
             self.rollout()  # collect trajectories
             self.update()  # update the policy
         self._finish_training()
 
     def rollout(self):
+        sim_metrics = {"reward_per_agent": np.zeros(len(self.r_agents))}
         observation = self.environment_reset()
-        print("environment reset for the rollout")
-        self.logger.info(f"Observation: {observation}")
         # set actions to 0 for all agents
         action = {k: 0 for k in self.r_agents}
-        env_action, ep_reward = [np.zeros(2) for _ in range(2)]
+        env_action, ep_reward = [np.zeros(len(self.r_agents)) for _ in range(2)]
         for step in range(self.batch_size):
+            self.run_metrics['global_steps'] += 1
             with th.no_grad():
                 for k in self.r_agents:
                     env_action[k], action[k] = self.agents[k].actor.get_action(observation[k])
             non_tensor_next_observation, reward, done, info = self.env.step(action)
+            ep_reward += reward
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             next_observation = _array_to_dict_tensor(self.r_agents, non_tensor_next_observation, self.device)
@@ -176,9 +209,20 @@ class LexicoPPO:
                     )
             # end simulation
             if all(list(done.values())):
+                self.run_metrics['global_episodes'] += 1
+                sim_metrics["reward_per_agent"] += ep_reward
+                ep_reward = np.zeros(len(self.r_agents))
                 observation = self.environment_reset()
+        # rewards are averaged over the number of trajectories done -> 5
+        # average reward per agent per trajectory
+        sim_metrics["reward_per_agent"] /= (self.batch_size / self.max_ep_length)
+        self.run_metrics["avg_episode_rewards"].append(sim_metrics["reward_per_agent"].mean())
+        for k in self.r_agents:
+            self.run_metrics["agent_performance"][f"Agent_{k}/Reward"] = sim_metrics["reward_per_agent"][k].mean()
+        return np.array(self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents)
 
     def update(self):
+        update_metrics = {}
         for k in self.r_agents:
             # reset index of the buffer
             self.buffer[k].clear()
@@ -187,26 +231,26 @@ class LexicoPPO:
             # TODO: we don't do multiple epoch for the same batch
             # for each agent, update the actor, the critic and the lagrange multipliers
             # update the actor
-            self.update_actor(batch, k)
+            self.update_actor(batch, k, update_metrics)
             # update the critic
-            self.update_critic(batch, k)
+            self.update_critic(batch, k, update_metrics)
             # update lagrange multipliers
-            self.update_lagrange(batch, k)
+            self.update_lagrange(batch, k, update_metrics)
 
     def _finish_training(self):
         self.logger.info(f"Training finished")
         # save the model
         self.save_experiment_data()
 
-    def update_actor(self, batch, k):
+    def update_actor(self, batch, k, update_metrics):
         self.agents[k].actor.train()
-        actor_loss = self.compute_loss(batch, k)
+        actor_loss = self.compute_loss(batch, k, update_metrics)
+        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
         self.agents[k].a_optimizer.zero_grad()
         actor_loss.backward()
         self.agents[k].a_optimizer.step()
-        # eval
 
-    def update_critic(self, batch, k):
+    def update_critic(self, batch, k, update_metrics):
         self.agents[k].critic.train()
         predictions = self.agents[k].critic(batch['observations'])
         with th.no_grad():
@@ -218,12 +262,10 @@ class LexicoPPO:
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
         self.agents[k].c_optimizer.step()
-        # eval
 
-    def update_lagrange(self, batch, k):
+    def update_lagrange(self, batch, k, update_metrics):
         for i in range(self.reward_size - 1):
             self.j[i] = -th.tensor(list(self.recent_losses[i])[25:]).mean()
-
         # update the lagrange multipliers
         r = self.reward_size - 1
         for i in range(r):
@@ -232,8 +274,9 @@ class LexicoPPO:
             else:
                 self.mu[i] += self.eta[i] * self.j[i]
             self.mu[i] = max(0.0, self.mu[i])
+        update_metrics[f"Agent_{k}/Mu"] = self.mu
 
-    def compute_loss(self, batch, k):
+    def compute_loss(self, batch, k, update_metrics):
         first_order = []
         for i in range(self.reward_size - 1):  # remember that reward_size is 2
             # it only enters one time, for i = 0
@@ -241,6 +284,7 @@ class LexicoPPO:
             # computes only one weight, j takes value 1
             first_order.append(w)
         first_order.append(self.beta[self.reward_size - 1])
+        update_metrics[f"Agent_{k}/First Order"] = first_order
         first_order_weights = th.tensor(first_order)
 
         # compute ppo loss

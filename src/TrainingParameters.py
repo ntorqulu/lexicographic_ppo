@@ -12,7 +12,6 @@ class TrainingParameters:
     tot_steps: int = 15000  # Total number of steps
     batch_size: int = 2500  # Batch size
     max_steps: int = 500  # Maximum number of steps per episode
-    save_dir: str = "example_data"  # Directory to save the model
     clip: float = 0.2  # PPO clip parameter
     gamma: float = 0.8  # Discount factor
     learning_rate: float = 3e-4  # TODO: just one learning rate for both actor and critic?

@@ -19,7 +19,6 @@ class Agent:
         self.device = next(self.actor.parameters()).device
         assert self.device == next(self.critic.parameters()).device
         self.save_dir = None
-        print("Agent initialized")
 
     def predict(self, x):
         return self.actor.predict(x)
@@ -31,17 +30,12 @@ class DNN(nn.Module):
     def __init__(self, in_size, out_size, hidden_size=16):
         super(DNN, self).__init__()
         self.out_size = out_size
-        print("out_size:", out_size)
-        print("in_size:", in_size)
         self.line1 = nn.Linear(in_size, hidden_size, bias=True)
         self.line2 = nn.Linear(hidden_size, out_size, bias=True)
-        print("Critic network initialized")
 
     def forward(self, x):
-        print("x.size(0):", x.size(0))
         x = F.relu(self.line1(x))
         x = self.line2(x)
-        print("x.size():", x.size())
         return x
 
 
