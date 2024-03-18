@@ -71,9 +71,8 @@ class PolicyDNN(nn.Module):
     def get_log_probs(self, states, actions):
         # get probability distribution over actions
         probs = self.forward(states)
-        log_probs = th.log(probs)
-        log_probs = log_probs.gather(-1, actions.to(th.int64)).squeeze()
-        return log_probs
+        log_probs = th.log(th.gather(probs, 1, actions.to(th.int64)))
+        return th.sum(log_probs, dim=1)
 
 
 def make_network(network_purpose, in_size, hidden_size, out_size):

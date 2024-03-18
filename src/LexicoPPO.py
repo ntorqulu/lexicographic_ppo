@@ -81,7 +81,7 @@ class LexicoPPO:
                                    out_size=self.a_size).to(self.device),
                 critic=make_network(network_purpose='prediction', in_size=self.o_size, hidden_size=self.h_size,
                                     out_size=self.reward_size).to(self.device),
-                learning_rate=train_params.learning_rate
+                learning_rate=train_params.learning_rate  # same learning rate for both actor and critic
             )
             # TODO: use custom buffer or ReplayBuffer?
             self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.device)
@@ -207,14 +207,13 @@ class LexicoPPO:
         # eval
 
     def update_critic(self, batch, k):
-        print("states", batch['observations'])
-        print("next_states", batch['next_observations'])
         self.agents[k].critic.train()
         predictions = self.agents[k].critic(batch['observations'])
         with th.no_grad():
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
-            target = rewards_expanded + (self.discount * self.agents[k].critic(batch['next_observations']) * dones_expanded)
+            target = rewards_expanded + (
+                        self.discount * self.agents[k].critic(batch['next_observations']) * dones_expanded)
         critic_loss = nn.MSELoss()(predictions, target)
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
@@ -235,10 +234,11 @@ class LexicoPPO:
             self.mu[i] = max(0.0, self.mu[i])
 
     def compute_loss(self, batch, k):
-        loss = "Undefined"
         first_order = []
-        for i in range(self.reward_size - 1):
+        for i in range(self.reward_size - 1):  # remember that reward_size is 2
+            # it only enters one time, for i = 0
             w = self.beta[i] + self.mu[i] * sum(self.beta[j] for j in range(i + 1, self.reward_size))
+            # computes only one weight, j takes value 1
             first_order.append(w)
         first_order.append(self.beta[self.reward_size - 1])
         first_order_weights = th.tensor(first_order)
@@ -248,7 +248,8 @@ class LexicoPPO:
             baseline = self.agents[k].critic(batch['observations'])
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
-            outcome = rewards_expanded + (self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
+            outcome = rewards_expanded + (
+                        self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
             advantage = (outcome - baseline).detach()
             old_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions']).detach()
         new_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions'])
@@ -256,10 +257,6 @@ class LexicoPPO:
         first_order_weighted_average = th.sum(first_order_weights * advantage[:, 0:self.reward_size], dim=1).to(
             self.device)
         kl_penalty = (new_log_probs - old_log_probs).to(self.device)
-        print("ratios size", ratios.size())
-        print("first order weighted average size", first_order_weighted_average.size())
-        print("kl_weight size", self.kl_weight)
-        print("kl_penalty size", kl_penalty.size())
         loss = -(ratios * first_order_weighted_average - self.kl_weight * kl_penalty).mean().to(self.device)
         # append the loss to the recent_losses
         for i in range(self.reward_size):
@@ -273,8 +270,6 @@ class LexicoPPO:
             self.kl_weight *= 0.5
         elif kl_penalty.mean() > self.kl_target * 1.5:
             self.kl_weight *= 2.0
-        if loss == "undefined":
-            raise Exception("Loss is undefined")
         return loss
 
     def save_experiment_data(self, folder=None):
