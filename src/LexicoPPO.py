@@ -1,15 +1,18 @@
 import collections
+import copy
+import json
 import logging
+import os
 import time
 import warnings
+from typing import List, Type, Dict
 
-import numpy as np
 import torch.nn as nn
 
 from agent import make_network, Agent
+from src.callbacks import Callback, UpdateCallback
 from utils.misc import *
 from utils.memory import Buffer
-from pathlib import Path
 
 # The MA environment does not follow the gym SA scheme, so it raises lots of warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -28,6 +31,57 @@ def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, ast
 
 
 class LexicoPPO:
+    callbacks: List[Callback] = []
+
+    @staticmethod
+    def actors_from_file(folder, dev='cpu', eval=True):
+        """
+        Creates the actors from the folder's model, and returns them set to eval mode.
+        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
+        :return:
+        """
+        # Load the args from the folder
+        with open(folder + "/config.json", "r") as f:
+            args = argparse.Namespace(**json.load(f))
+            # Load the model
+            agents = []
+            for k in range(args.n_agents):
+                model = th.load(folder + f"/actor_{k}.pth")
+                o_size = model["line1.weight"].shape[1]
+                a_size = model["line2.weight"].shape[0]
+                actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
+                                     out_size=a_size, eval_mode=eval).to(dev)
+                actor.load_state_dict(model)
+
+                agents.append(actor)
+            return agents
+
+    @staticmethod
+    def agents_from_file(folder, dev='cpu', eval=True):
+        """
+        Creates the agents from the folder's model, and returns them set to eval mode.
+        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
+        :return:
+        """
+        # Load the args from the folder
+        with open(folder + "/config.json", "r") as f:
+            args = argparse.Namespace(**json.load(f))
+            # Load the model
+            agents = []
+            for k in range(args.n_agents):
+                model = th.load(folder + f"/actor_{k}.pth")
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
+                actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
+                                     out_size=a_size, eval=eval).to(dev)
+                actor.load_state_dict(model)
+                critic = make_network(network_purpose='prediction', in_size=o_size, hidden_size=args.h_size,
+                                      out_size=args.reward_size, eval=eval).to(dev)
+                critic.load_state_dict(th.load(folder + f"/critic_{k}.pth"))
+
+                agents.append(Agent(actor, critic, args.learning_rate))
+            return agents
+
     def __init__(self, train_params, env):
         # Create logger with the name of the class
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -41,8 +95,12 @@ class LexicoPPO:
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
+        # store all the training parameters in a variable init_args
+        self.init_args = train_params
+
         # Action-space and observation-space sizes
         self.env = env
+        self.tag = train_params.tag
         self.o_size = env.observation_space.sample().shape[0]
         self.a_size = env.action_space.n  # number of actions
         self.h_size = train_params.h_layers_size
@@ -55,9 +113,10 @@ class LexicoPPO:
         self.run_metrics = None
         self.update_metrics = {}
         self.sim_metrics = {}
-        self.folder = train_params.folder
+        self.save_dir = train_params.save_dir
         self.eval_mode = False
         self.seed = train_params.seed
+        self.eval_mode = False
 
         # Behaviours
         self.learning_rate = train_params.learning_rate
@@ -124,10 +183,10 @@ class LexicoPPO:
 
         # Reset run metrics
         self.run_metrics = {
-            'global_steps': 0, # total steps done in training
-            'global_episodes': 0, # total episodes done in training
-            'start_time': time.time(), # start time of the training
-            'avg_episode_rewards': collections.deque(maxlen=500), # average episode rewards
+            'global_steps': 0,  # total steps done in training
+            'global_episodes': 0,  # total episodes done in training
+            'start_time': time.time(),  # start time of the training
+            'avg_episode_rewards': collections.deque(maxlen=500),  # average episode rewards
             'agent_performance': {},
             'mean_loss': collections.deque(maxlen=500),
         }
@@ -182,6 +241,8 @@ class LexicoPPO:
                 for k in self.r_agents:
                     env_action[k], action[k] = self.agents[k].actor.get_action(observation[k])
             non_tensor_next_observation, reward, done, info = self.env.step(action)
+            # print reward
+            print(f"Reward: {reward}")
             ep_reward += reward
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
@@ -219,7 +280,8 @@ class LexicoPPO:
         self.run_metrics["avg_episode_rewards"].append(sim_metrics["reward_per_agent"].mean())
         for k in self.r_agents:
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward"] = sim_metrics["reward_per_agent"][k].mean()
-        return np.array(self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents)
+        return np.array(
+            self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents)
 
     def update(self):
         update_metrics = {}
@@ -237,8 +299,17 @@ class LexicoPPO:
             # update lagrange multipliers
             self.update_lagrange(batch, k, update_metrics)
 
+            # Run callbacks
+            for c in LexicoPPO.callbacks:
+                if issubclass(type(c), UpdateCallback):
+                    c.after_update()
+
     def _finish_training(self):
-        self.logger.info(f"Training finished")
+        # Log relevant data from training
+        self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
+        self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
+        self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
+        self.logger.info(f"Number of updates: {self.n_updates}")
         # save the model
         self.save_experiment_data()
 
@@ -257,7 +328,7 @@ class LexicoPPO:
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
             target = rewards_expanded + (
-                        self.discount * self.agents[k].critic(batch['next_observations']) * dones_expanded)
+                    self.discount * self.agents[k].critic(batch['next_observations']) * dones_expanded)
         critic_loss = nn.MSELoss()(predictions, target)
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
@@ -293,7 +364,7 @@ class LexicoPPO:
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
             outcome = rewards_expanded + (
-                        self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
+                    self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
             advantage = (outcome - baseline).detach()
             old_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions']).detach()
         new_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions'])
@@ -316,23 +387,77 @@ class LexicoPPO:
             self.kl_weight *= 2.0
         return loss
 
-    def save_experiment_data(self, folder=None):
+    def save_experiment_data(self, folder=None, ckpt=False):
+        config = self.init_args
+        # Create new folder in to save the model using tag, n_steps, tot_steps and seed as name
         if folder is None:
-            folder = Path(self.folder) / "model"
+            folder = f"{config.save_dir}/{config.tag}/{config.tot_steps}_{config.batch_size // config.max_steps}_{config.seed}"
+
+        # Check if folder's config file is the same as the current config
+        def diff_config(path):
+            if os.path.exists(path):
+                tries = 0
+                while tries < 5:
+                    try:
+                        with open(path + "/config.json", "r") as f:
+                            old_config = json.load(f)
+                        if old_config != vars(config):
+                            return True
+                        return False
+                    except FileNotFoundError as e:
+                        tries += 1
+                        time.sleep(1)
+            return False
+
+        num = 1
+        if not ckpt:
+            _folder = copy.copy(folder)
+            while diff_config(_folder):
+                # append a number to the folder name
+                _folder = folder + "_(" + str(num) + ")"
+                num += 1
+            folder = _folder
         else:
-            folder = Path(folder) / "model"
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"Model folder created at {folder}")
-        except Exception as e:
-            self.logger.error(f"Error creating model folder: {e}")
-            return
+            folder = folder + "_ckpt"
+
+        if not os.path.exists(folder):
+            # Try-catch for concurrency issues
+            tries = 0
+            while tries < 5:
+                try:
+                    os.makedirs(folder)
+                    break
+                except FileExistsError as e:
+                    tries += 1
+                    time.sleep(1)
+
+        print(f"Saving model in {folder}")
+        self.folder = folder
+        setattr(config, "saved_dir", folder)
+        setattr(self, "saved_dir", folder)
+
+        # Save the model
         for k in self.r_agents:
-            try:
-                th.save(self.agents[k].actor, folder / f"actor_{k}.pth")
-                th.save(self.agents[k].critic, folder / f"critic_{k}.pth")
-                self.agents[k].save_dir = str(folder)
-                self.logger.info(f"Model for agent {k} saved at {folder}")
-            except Exception as e:
-                self.logger.error(f"Error saving model for agent {k}: {e}")
-                return
+            th.save(self.agents[k].actor.state_dict(), folder + f"/actor_{k}.pth")
+            th.save(self.agents[k].critic.state_dict(), folder + f"/critic_{k}.pth")
+            self.agents[k].save_dir = folder
+
+        # Save the args as a json file
+        with open(folder + "/config.json", "w") as f:
+            json.dump(vars(config), f, indent=4)
+        return folder
+
+    def addCallbacks(self, callbacks, private=False):
+        if isinstance(callbacks, list):
+            for c in callbacks:
+                if not issubclass(type(c), Callback):
+                    raise TypeError("Element of class ", type(c).__name__, " not a subclass from Callback")
+                c.ppo = self
+                c.initiate()
+            LexicoPPO.callbacks = callbacks
+        elif isinstance(callbacks, Callback):
+            callbacks.ppo = self
+            callbacks.initiate()
+            LexicoPPO.callbacks.append(callbacks)
+        else:
+            raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")

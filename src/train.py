@@ -6,6 +6,7 @@ import torch
 from EthicalGatheringGame.presets import tiny
 from TrainingParameters import TrainingParameters
 from LexicoPPO import LexicoPPO
+from src.callbacks import PrintAverageReward
 
 if __name__ == '__main__':
     # Create the environment
@@ -16,6 +17,6 @@ if __name__ == '__main__':
 
     # initialize lexico_ppo agent
     agent = LexicoPPO(train_params=params, env=env)
-
+    agent.addCallbacks(PrintAverageReward(agent, 300))
     # Train the agent
     agent.train()  # without reset and set_agents for now

@@ -41,10 +41,11 @@ class DNN(nn.Module):
 
 class PolicyDNN(nn.Module):
     # Policy network, for actor
-    def __init__(self, in_size, action_size, hidden_size=16):
+    def __init__(self, in_size, action_size, hidden_size=16, eval_mode=False):
         super(PolicyDNN, self).__init__()
         self.line1 = nn.Linear(in_size, hidden_size, bias=True)
         self.line2 = nn.Linear(hidden_size, action_size, bias=True)
+        self.eval_mode = eval_mode
 
     def forward(self, x):
         x = F.relu(self.line1(x))
@@ -60,6 +61,7 @@ class PolicyDNN(nn.Module):
         # sample from the distribution
         action = m.sample()
         env_action = ACTIONS[action]
+        print(env_action, action)
         return env_action, action
 
     def get_log_probs(self, states, actions):
@@ -68,12 +70,23 @@ class PolicyDNN(nn.Module):
         log_probs = th.log(th.gather(probs, 1, actions.to(th.int64)))
         return th.sum(log_probs, dim=1)
 
+    def predict(self, x):
+        if not self.eval_mode:
+            raise ValueError("Cannot predict in training mode")
+            # Check if its a tensor
+        if not isinstance(x, th.Tensor):
+            x = th.tensor(x, dtype=th.float32)
+        with th.no_grad():
+            prob = self.forward(x)
+            action = th.argmax(prob).item()
+        return ACTIONS[action]
 
-def make_network(network_purpose, in_size, hidden_size, out_size):
+
+def make_network(network_purpose, in_size, hidden_size, out_size, eval_mode=False):
     # Create a neural network
     assert network_purpose in ['policy', 'prediction']
     if network_purpose == 'policy':
-        net = PolicyDNN(in_size, out_size, hidden_size)
+        net = PolicyDNN(in_size, out_size, hidden_size, eval_mode)
 
     if network_purpose == 'prediction':
         net = DNN(in_size, out_size, hidden_size)
