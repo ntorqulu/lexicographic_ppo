@@ -37,7 +37,7 @@ class PrintAverageReward(UpdateCallback):
 
     def after_update(self):
         if self.ppo.run_metrics["global_episodes"] % self.n == 0:
-            print(f"Average Reward: {np.array(self.ppo.run_metrics['avg_reward']).mean()}")
+            print(f"Average Reward: {np.array(self.ppo.run_metrics['avg_episode_rewards']).mean()}")
 
     def before_update(self):
         pass

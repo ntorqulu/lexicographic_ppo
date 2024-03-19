@@ -20,4 +20,3 @@ class TrainingParameters:
     n_cpus = 8  # Number of cpus to use
     n_envs: int = 5
     h_layers_size: int = 16  # TODO: from IPPO, SIZE OF THE HIDDEN LAYERS
-    eval_mode: bool = False  # Evaluation mode

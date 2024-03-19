@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import torch as th
 
+from src.ActionSelection import bottom_filter
+
 ACTIONS = [0, 1, 2, 3, 4, 5, 6]
 
 
@@ -14,8 +16,8 @@ class Agent:
         self.actor = actor
         self.critic = critic
         # TODO: just one learning rate for both actor and critic?
-        self.a_optimizer = optim.Adam(list(self.actor.parameters()), lr=learning_rate, eps=1e-5)
-        self.c_optimizer = optim.Adam(list(self.critic.parameters()), lr=learning_rate, eps=1e-5)
+        self.a_optimizer = optim.Adam(list(self.actor.parameters()), lr=learning_rate * 0.01)
+        self.c_optimizer = optim.Adam(list(self.critic.parameters()), lr=learning_rate)
         self.device = next(self.actor.parameters()).device
         assert self.device == next(self.critic.parameters()).device
         self.save_dir = None
@@ -40,6 +42,8 @@ class DNN(nn.Module):
 
 
 class PolicyDNN(nn.Module):
+    action_selection = bottom_filter
+
     # Policy network, for actor
     def __init__(self, in_size, action_size, hidden_size=16, eval_mode=False):
         super(PolicyDNN, self).__init__()
@@ -54,15 +58,8 @@ class PolicyDNN(nn.Module):
         return x
 
     def get_action(self, x):
-        # get probability distribution over actions
-        probs = self.forward(x)
-        # get a categorical distribution with the probabilities obtained
-        m = Categorical(probs)
-        # sample from the distribution
-        action = m.sample()
-        env_action = ACTIONS[action]
-        print(env_action, action)
-        return env_action, action
+        action = Categorical(self.forward(x)).sample()
+        return action.item()
 
     def get_log_probs(self, states, actions):
         # get probability distribution over actions
@@ -73,12 +70,12 @@ class PolicyDNN(nn.Module):
     def predict(self, x):
         if not self.eval_mode:
             raise ValueError("Cannot predict in training mode")
-            # Check if its a tensor
+            # Check if it's a tensor
         if not isinstance(x, th.Tensor):
             x = th.tensor(x, dtype=th.float32)
         with th.no_grad():
             prob = self.forward(x)
-            action = th.argmax(prob).item()
+            action = PolicyDNN.action_selection(np.array(prob, dtype='float64').squeeze())
         return ACTIONS[action]
 
 

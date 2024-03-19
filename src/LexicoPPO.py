@@ -31,6 +31,11 @@ def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, ast
 
 
 class LexicoPPO:
+    """
+        LexicoPPO class implements the Lexicographic variant of Proximal Policy Optimization (PPO) algorithm for
+        multi-agent reinforcement learning.
+        """
+
     callbacks: List[Callback] = []
 
     @staticmethod
@@ -83,11 +88,16 @@ class LexicoPPO:
             return agents
 
     def __init__(self, train_params, env):
-        # Create logger with the name of the class
+        """
+        Initialize the LexicoPPO agent with training parameters and environment.
+
+        Args:
+            train_params (argparse.Namespace): Training parameters.
+            env: Multi-agent environment.
+
+        """
         self.logger = logging.getLogger(self.__class__.__name__)
-        # Set level of the logger to DEBUG (for now)
         self.logger.setLevel(logging.DEBUG)
-        # Add a console handler to the logger if it doesn't have one
         if len(self.logger.handlers) == 0:
             ch = logging.StreamHandler()
             ch.setLevel(logging.INFO)
@@ -95,38 +105,24 @@ class LexicoPPO:
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
-        # store all the training parameters in a variable init_args
         self.init_args = train_params
 
-        # Action-space and observation-space sizes
         self.env = env
         self.tag = train_params.tag
         self.o_size = env.observation_space.sample().shape[0]
         self.a_size = env.action_space.n  # number of actions
         self.h_size = train_params.h_layers_size
         self.reward_size = train_params.reward_size
-
-        # Attributes
         self.r_agents = range(train_params.n_agents)
+
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         self.run_name = f"{train_params.env_name}_{train_params.seed}_{timestamp}_{np.random.randint(0, 100)}"
-        self.run_metrics = None
-        self.update_metrics = {}
-        self.sim_metrics = {}
         self.save_dir = train_params.save_dir
         self.eval_mode = False
         self.seed = train_params.seed
-        self.eval_mode = False
-
-        # Behaviours
-        self.learning_rate = train_params.learning_rate
-
-        # Training parameters
         self.tot_steps = train_params.tot_steps  # total steps done in training
         self.max_ep_length = train_params.max_steps  # max number of steps per episode is always 500
         self.batch_size = train_params.batch_size
-
-        # Torch init
         self.device = set_torch(n_cpus=train_params.n_cpus, cuda=False)
 
         # metrics
@@ -134,10 +130,25 @@ class LexicoPPO:
         self.update_metrics = {}
         self.sim_metrics = {}
 
+        # Behaviours
+        self.learning_rate = train_params.learning_rate
+
         # Actor-critic
         self.n_updates = None
-        self.buffer = None
-        self.agents, self.buffer = {}, {}
+        self.agents = {}
+        self.buffer = {}
+
+        # Lexico params
+        self.discount = 0.99
+        self.mu = [0.0 for _ in range(self.reward_size - 1)]
+        self.j = [0.0 for _ in range(self.reward_size - 1)]
+        self.recent_losses = [collections.deque(maxlen=50) for i in range(self.reward_size)]
+
+        self.beta = list(reversed(range(1, self.reward_size + 1)))
+        self.eta = [1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))]
+
+        self.kl_weight = 1.0
+        self.kl_target = 0.025
 
         # Initialize agents
         for k in self.r_agents:
@@ -152,17 +163,6 @@ class LexicoPPO:
             )
             # TODO: use custom buffer or ReplayBuffer?
             self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.device)
-
-        self.discount = 0.99
-        self.mu = [0.0 for _ in range(self.reward_size - 1)]
-        self.j = [0.0 for _ in range(self.reward_size - 1)]
-        self.recent_losses = [collections.deque(maxlen=50) for i in range(self.reward_size)]
-
-        self.beta = list(reversed(range(1, self.reward_size + 1)))
-        self.eta = [1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))]
-
-        self.kl_weight = 1.0
-        self.kl_target = 0.025
 
     def environment_reset(self):
         non_tensor_observation, info = self.env.reset()
@@ -239,14 +239,13 @@ class LexicoPPO:
             self.run_metrics['global_steps'] += 1
             with th.no_grad():
                 for k in self.r_agents:
-                    env_action[k], action[k] = self.agents[k].actor.get_action(observation[k])
+                    action[k] = self.agents[k].actor.get_action(observation[k])
             non_tensor_next_observation, reward, done, info = self.env.step(action)
-            # print reward
-            print(f"Reward: {reward}")
             ep_reward += reward
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             next_observation = _array_to_dict_tensor(self.r_agents, non_tensor_next_observation, self.device)
+            action = _array_to_dict_tensor(self.r_agents, action, self.device)
             # TODO: check how to store rewards to set a preference
             """
             if mode == 1:
@@ -297,7 +296,7 @@ class LexicoPPO:
             # update the critic
             self.update_critic(batch, k, update_metrics)
             # update lagrange multipliers
-            self.update_lagrange(batch, k, update_metrics)
+            self.update_lagrange(k, update_metrics)
 
             # Run callbacks
             for c in LexicoPPO.callbacks:
@@ -320,6 +319,7 @@ class LexicoPPO:
         self.agents[k].a_optimizer.zero_grad()
         actor_loss.backward()
         self.agents[k].a_optimizer.step()
+        self.agents[k].actor.eval()
 
     def update_critic(self, batch, k, update_metrics):
         self.agents[k].critic.train()
@@ -328,22 +328,20 @@ class LexicoPPO:
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
             target = rewards_expanded + (
-                    self.discount * self.agents[k].critic(batch['next_observations']) * dones_expanded)
-        critic_loss = nn.MSELoss()(predictions, target)
+                    self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
+        critic_loss = nn.MSELoss()(predictions, target).to(self.device)
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
         self.agents[k].c_optimizer.step()
+        self.agents[k].critic.eval()
 
-    def update_lagrange(self, batch, k, update_metrics):
+    def update_lagrange(self, k, update_metrics):
         for i in range(self.reward_size - 1):
             self.j[i] = -th.tensor(list(self.recent_losses[i])[25:]).mean()
         # update the lagrange multipliers
         r = self.reward_size - 1
         for i in range(r):
-            if len(self.recent_losses[i]) > 0:
-                self.mu[i] += self.eta[i] * (self.j[i] - (-self.recent_losses[i][-1]))
-            else:
-                self.mu[i] += self.eta[i] * self.j[i]
+            self.mu[i] += self.eta[i] * (self.j[i] - (-self.recent_losses[i][-1]))
             self.mu[i] = max(0.0, self.mu[i])
         update_metrics[f"Agent_{k}/Mu"] = self.mu
 
