@@ -237,17 +237,7 @@ class LexicoPPO:
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             next_observation = _array_to_dict_tensor(self.r_agents, non_tensor_next_observation, self.device)
-            # TODO: check how to store rewards to set a preference
-            """
-            if mode == 1:
-                # set first component of the reward positive and the second negative
-                reward = [[reward[k][0], -reward[k][1]] for k in self.r_agents]
-            elif mode == 2:
-                # set first component of the reward negative and the second positive
-                reward = [[-reward[k][0], reward[k][1]] for k in self.r_agents]
-            # if mode == 3, let them unchanged
-            """
-            # For now, let rewards unchanged
+
             # save the collected experience into the buffer
             if not self.eval_mode:
                 for k in self.r_agents:
@@ -271,7 +261,7 @@ class LexicoPPO:
         for k in self.r_agents:
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward"] = sim_metrics["reward_per_agent"][k].mean()
         return np.array(
-            self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents)
+            [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
     def update(self):
         update_metrics = {}
@@ -294,15 +284,6 @@ class LexicoPPO:
                 if issubclass(type(c), UpdateCallback):
                     c.after_update()
 
-    def _finish_training(self):
-        # Log relevant data from training
-        self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
-        self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
-        self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
-        self.logger.info(f"Number of updates: {self.n_updates}")
-        # save the model
-        self.save_experiment_data()
-
     def update_actor(self, batch, k, update_metrics):
         self.agents[k].actor.train()
         actor_loss = self.compute_loss(batch, k, update_metrics)
@@ -321,6 +302,7 @@ class LexicoPPO:
             target = rewards_expanded + (
                     self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
         critic_loss = nn.MSELoss()(predictions, target).to(self.device)
+        update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.item()
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
         self.agents[k].c_optimizer.step()
@@ -375,6 +357,15 @@ class LexicoPPO:
         elif kl_penalty.mean() > self.kl_target * 1.5:
             self.kl_weight *= 2.0
         return loss
+
+    def _finish_training(self):
+        # Log relevant data from training
+        self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
+        self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
+        self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
+        self.logger.info(f"Number of updates: {self.n_updates}")
+        # save the model
+        self.save_experiment_data()
 
     def save_experiment_data(self, folder=None, ckpt=False):
         config = self.init_args

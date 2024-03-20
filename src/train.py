@@ -9,6 +9,7 @@ from src.callbacks import PrintAverageReward
 if __name__ == '__main__':
     # Create the environment
     env = gym.make("MultiAgentEthicalGathering-v1", **tiny)
+    env = NormalizeReward(env)
     # Set parameters
     params = TrainingParameters(env_name="MultiAgentEthicalGathering-v1")
 

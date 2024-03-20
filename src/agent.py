@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import torch as th
 
-from src.ActionSelection import bottom_filter
+from src.ActionSelection import *
 
 ACTIONS = [0, 1, 2, 3, 4, 5, 6]
 
@@ -42,7 +42,7 @@ class DNN(nn.Module):
 
 
 class PolicyDNN(nn.Module):
-    action_selection = bottom_filter
+    action_selection = no_filter
 
     # Policy network, for actor
     def __init__(self, in_size, action_size, hidden_size=16, eval_mode=False):

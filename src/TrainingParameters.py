@@ -16,7 +16,7 @@ class TrainingParameters:
     max_steps: int = 500  # Maximum number of steps per episode
     clip: float = 0.2  # PPO clip parameter
     gamma: float = 0.8  # Discount factor
-    learning_rate: float = 3e-4  # TODO: just one learning rate for both actor and critic?
+    learning_rate: float = 1e-3  # TODO: just one learning rate for both actor and critic?
     n_epochs: int = 10  # Number of epochs per update
     n_cpus = 8  # Number of cpus to use
     n_envs: int = 5
