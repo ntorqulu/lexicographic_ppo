@@ -11,6 +11,7 @@ import torch.nn as nn
 
 from agent import make_network, Agent
 from src.callbacks import Callback, UpdateCallback
+from src.utils.misc import _array_to_dict_tensor
 from utils.misc import *
 from utils.memory import Buffer
 
@@ -18,16 +19,6 @@ from utils.memory import Buffer
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.simplefilter(action='ignore', category=DeprecationWarning)
-
-
-def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, astype: Type = th.float32) -> Dict:
-    # Check if the provided device is already the current device
-    is_same_device = (device == th.cuda.current_device()) if device.type == 'cuda' else (device == th.device('cpu'))
-
-    if is_same_device:
-        return {k: th.as_tensor(d, dtype=astype) for k, d in zip(agents, data)}
-    else:
-        return {k: th.as_tensor(d, dtype=astype).to(device) for k, d in zip(agents, data)}
 
 
 class LexicoPPO:
@@ -75,13 +66,13 @@ class LexicoPPO:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["hidden.0.weight"].shape[1]
-                a_size = model["output.weight"].shape[0]
+                o_size = model["line1.weight"].shape[1]
+                a_size = model["line2.weight"].shape[0]
                 actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
-                                     out_size=a_size, eval=eval).to(dev)
+                                     out_size=a_size, eval_mode=eval).to(dev)
                 actor.load_state_dict(model)
                 critic = make_network(network_purpose='prediction', in_size=o_size, hidden_size=args.h_size,
-                                      out_size=args.reward_size, eval=eval).to(dev)
+                                      out_size=args.reward_size, eval_mode=eval).to(dev)
                 critic.load_state_dict(th.load(folder + f"/critic_{k}.pth"))
 
                 agents.append(Agent(actor, critic, args.learning_rate))
@@ -120,6 +111,7 @@ class LexicoPPO:
         self.save_dir = train_params.save_dir
         self.eval_mode = False
         self.seed = train_params.seed
+        self.th_deterministic = train_params.th_deterministic
         self.tot_steps = train_params.tot_steps  # total steps done in training
         self.max_ep_length = train_params.max_steps  # max number of steps per episode is always 500
         self.batch_size = train_params.batch_size
@@ -139,7 +131,7 @@ class LexicoPPO:
         self.buffer = {}
 
         # Lexico params
-        self.discount = 0.99
+        self.discount = train_params.discount
         self.mu = [0.0 for _ in range(self.reward_size - 1)]
         self.j = [0.0 for _ in range(self.reward_size - 1)]
         self.recent_losses = [collections.deque(maxlen=50) for i in range(self.reward_size)]
@@ -147,8 +139,8 @@ class LexicoPPO:
         self.beta = list(reversed(range(1, self.reward_size + 1)))
         self.eta = [1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))]
 
-        self.kl_weight = 1.0
-        self.kl_target = 0.025
+        self.kl_weight = train_params.kl_weight
+        self.kl_target = train_params.kl_target
 
         # Initialize agents
         for k in self.r_agents:
@@ -179,14 +171,14 @@ class LexicoPPO:
     def train(self):
         self.environment_setup()
         # set seed for training
-        set_seeds(self.seed)
+        set_seeds(self.seed, self.th_deterministic)
 
         # Reset run metrics
         self.run_metrics = {
             'global_steps': 0,  # total steps done in training
             'global_episodes': 0,  # total episodes done in training
             'start_time': time.time(),  # start time of the training
-            'avg_episode_rewards': collections.deque(maxlen=500),  # average episode rewards
+            'avg_episode_rewards': collections.deque(maxlen=500),
             'agent_performance': {},
             'mean_loss': collections.deque(maxlen=500),
         }
@@ -233,19 +225,18 @@ class LexicoPPO:
         sim_metrics = {"reward_per_agent": np.zeros(len(self.r_agents))}
         observation = self.environment_reset()
         # set actions to 0 for all agents
-        action = {k: 0 for k in self.r_agents}
+        action = {k: th.zeros(self.a_size).to(self.device) for k in self.r_agents}
         env_action, ep_reward = [np.zeros(len(self.r_agents)) for _ in range(2)]
         for step in range(self.batch_size):
             self.run_metrics['global_steps'] += 1
             with th.no_grad():
                 for k in self.r_agents:
-                    action[k] = self.agents[k].actor.get_action(observation[k])
-            non_tensor_next_observation, reward, done, info = self.env.step(action)
+                    env_action[k], action[k] = self.agents[k].actor.get_action(observation[k])
+            non_tensor_next_observation, reward, done, info = self.env.step(env_action)
             ep_reward += reward
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             next_observation = _array_to_dict_tensor(self.r_agents, non_tensor_next_observation, self.device)
-            action = _array_to_dict_tensor(self.r_agents, action, self.device)
             # TODO: check how to store rewards to set a preference
             """
             if mode == 1:

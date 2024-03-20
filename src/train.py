@@ -9,15 +9,10 @@ from src.callbacks import PrintAverageReward
 if __name__ == '__main__':
     # Create the environment
     env = gym.make("MultiAgentEthicalGathering-v1", **tiny)
-    env = NormalizeReward(env)
     # Set parameters
     params = TrainingParameters(env_name="MultiAgentEthicalGathering-v1")
 
     # initialize lexico_ppo agent
     ppo = LexicoPPO(train_params=params, env=env)
     ppo.addCallbacks(PrintAverageReward(ppo, 1))
-    start = time.time()
     ppo.train()
-    t = time.time() - start
-    print(f"Steps per second: {ppo.tot_steps / t}")
-    agents = LexicoPPO.actors_from_file("example_data/tiny/15000_5_1_(3)")

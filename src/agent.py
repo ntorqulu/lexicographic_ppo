@@ -58,8 +58,10 @@ class PolicyDNN(nn.Module):
         return x
 
     def get_action(self, x):
+        # Get action from the policy network
         action = Categorical(self.forward(x)).sample()
-        return action.item()
+        env_action = ACTIONS[action.item()]
+        return env_action, action
 
     def get_log_probs(self, states, actions):
         # get probability distribution over actions
