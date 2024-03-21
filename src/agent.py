@@ -5,8 +5,6 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import torch as th
 
-from src.ActionSelection import *
-
 ACTIONS = [0, 1, 2, 3, 4, 5, 6]
 
 
@@ -42,7 +40,6 @@ class DNN(nn.Module):
 
 
 class PolicyDNN(nn.Module):
-    action_selection = greedy
 
     # Policy network, for actor
     def __init__(self, in_size, action_size, hidden_size=16, eval_mode=False):
@@ -76,9 +73,9 @@ class PolicyDNN(nn.Module):
         if not isinstance(x, th.Tensor):
             x = th.tensor(x, dtype=th.float32)
         with th.no_grad():
-            prob = self.forward(x)
-            action = PolicyDNN.action_selection(np.array(prob, dtype='float64').squeeze())
-        return ACTIONS[action]
+            action = Categorical(self.forward(x)).sample()
+            env_action = ACTIONS[action.item()]
+        return env_action
 
 
 def make_network(network_purpose, in_size, hidden_size, out_size, eval_mode=False):

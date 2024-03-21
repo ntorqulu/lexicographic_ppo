@@ -310,6 +310,7 @@ class LexicoPPO:
 
     def update_lagrange(self, k, update_metrics):
         for i in range(self.reward_size - 1):
+            # TODO check
             self.j[i] = -th.tensor(list(self.recent_losses[i])[25:]).mean()
         # update the lagrange multipliers
         r = self.reward_size - 1
