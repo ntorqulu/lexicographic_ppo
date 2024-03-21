@@ -42,7 +42,7 @@ class DNN(nn.Module):
 
 
 class PolicyDNN(nn.Module):
-    action_selection = no_filter
+    action_selection = greedy
 
     # Policy network, for actor
     def __init__(self, in_size, action_size, hidden_size=16, eval_mode=False):

@@ -331,22 +331,24 @@ class LexicoPPO:
 
         # compute ppo loss
         with th.no_grad():
-            baseline = self.agents[k].critic(batch['observations'])
+            baseline = self.agents[k].critic(batch['observations'].to(self.device))
             rewards_expanded = batch['rewards'].unsqueeze(-1)
             dones_expanded = batch['dones'].unsqueeze(-1)
             outcome = rewards_expanded + (
-                    self.discount * self.agents[k].critic(batch['next_observations']) * (1 - dones_expanded))
+                    self.discount * self.agents[k].critic(batch['next_observations'].to(self.device)) * (1 - dones_expanded))
             advantage = (outcome - baseline).detach()
             old_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions']).detach()
-        new_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions'])
+        new_log_probs = self.agents[k].actor.get_log_probs(batch['observations'], batch['actions']).to(self.device)
         ratios = th.exp(new_log_probs - old_log_probs).to(self.device)
-        first_order_weighted_average = th.sum(first_order_weights * advantage[:, 0:self.reward_size], dim=1).to(
+        first_order_weighted_advantages = th.sum(first_order_weights * advantage[:, 0:self.reward_size], dim=1).to(
             self.device)
         kl_penalty = (new_log_probs - old_log_probs).to(self.device)
-        loss = -(ratios * first_order_weighted_average - self.kl_weight * kl_penalty).mean().to(self.device)
+        relative_kl_weights = [self.kl_weight * first_order_weights[i] / sum(first_order_weights) for i in
+                               range(self.reward_size)]
+        loss = -(ratios * first_order_weighted_advantages - self.kl_weight * kl_penalty).mean().to(self.device)
         # append the loss to the recent_losses
         for i in range(self.reward_size):
-            self.recent_losses[i].append(-(ratios * advantage[:, i]).mean())
+            self.recent_losses[i].append(-(ratios * advantage[:, i] - relative_kl_weights[i] * kl_penalty).mean())
         # check for nans and infs
         if th.isnan(loss) or th.isinf(loss):
             print("Loss is nan or inf")
