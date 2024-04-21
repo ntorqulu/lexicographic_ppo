@@ -1,0 +1,27 @@
+# run the following command to create virtual env and install the required packages
+# virtualenv .env && source .env/bin/activate && pip install -r requirements.txt
+
+cloudpickle==3.0.0
+contourpy==1.2.0
+cycler==0.12.1
+filelock==3.13.1
+fonttools==4.49.0
+fsspec==2024.2.0
+gym==0.26.2
+gym-notices==0.0.8
+Jinja2==3.1.3
+kiwisolver==1.4.5
+MarkupSafe==2.1.5
+matplotlib==3.8.3
+mpmath==1.3.0
+MultiAgentEthicalGathering @ git+https://github.com/maymac00/MultiAgentEthicalGatheringGame.git@a2c97e84fea9e3f185819e663d179dbf909721c0
+networkx==3.2.1
+numpy==1.26.4
+packaging==24.0
+pillow==10.2.0
+pyparsing==3.1.2
+python-dateutil==2.9.0.post0
+six==1.16.0
+sympy==1.12
+torch==2.2.1
+typing_extensions==4.10.0
