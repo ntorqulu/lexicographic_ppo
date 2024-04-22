@@ -91,7 +91,7 @@ class LexicoPPO:
         self.logger.setLevel(logging.DEBUG)
         if len(self.logger.handlers) == 0:
             ch = logging.StreamHandler()
-            ch.setLevel(logging.DEBUG)
+            ch.setLevel(logging.INFO)
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
@@ -392,8 +392,6 @@ class LexicoPPO:
         # 2. Compute updated log probabilities and ratio
         _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
                                                                  batch['actions'])
-        entropy_loss = entropy.mean()
-        update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
 
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
@@ -422,8 +420,7 @@ class LexicoPPO:
         self.logger.debug(f"Agent {k} actor_loss shape: {actor_loss.shape}")
         # mean for each reward (columns) and then mean of the means
         update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
-        actor_loss_reduced = -actor_loss - self.entropy_coef * entropy_loss  # size [1]
-        update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
+        actor_loss_reduced = -actor_loss  # size [1]
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
 
         past_advantages = normalize(batch['advantages'])
@@ -431,7 +428,7 @@ class LexicoPPO:
             actor_loss = ratio * past_advantages[:, i]
             actor_clip_loss = past_advantages[:, i] * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
             actor_loss = th.min(actor_loss, actor_clip_loss)
-            self.recent_losses[k][i].append(-actor_loss.mean() - self.entropy_coef * entropy_loss)
+            self.recent_losses[k][i].append(-actor_loss.mean())
         return actor_loss_reduced
 
     def _finish_training(self):

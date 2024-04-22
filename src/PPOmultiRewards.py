@@ -371,8 +371,8 @@ class PPOmultiRewards:
         # 2. Compute updated log probabilities and ratio
         _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
                                                                  batch['actions'])
-        entropy_loss = entropy.mean()
-        update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
+        #entropy_loss = entropy.mean()
+        #update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
 
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
@@ -404,8 +404,8 @@ class PPOmultiRewards:
         self.logger.debug(f"Agent {k} actor_loss: {actor_loss}")
         update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
         # mean for each reward (columns) and then mean of the means
-        actor_loss_reduced = -actor_loss - self.entropy_coef * entropy_loss
-        update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
+        actor_loss_reduced = -actor_loss
+        #update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
 
         return actor_loss_reduced
