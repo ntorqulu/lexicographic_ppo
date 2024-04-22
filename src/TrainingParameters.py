@@ -11,7 +11,7 @@ class TrainingParameters:
     save_dir: str = "StoreNuria"  # Folder to save the model
     n_agents: int = 2  # Number of agents in the environment
     reward_size: int = 2  # Size of the reward vector
-    tot_steps: int = 25000  # Total number of steps
+    tot_steps: int = 2500  # Total number of steps
     batch_size: int = 2500  # Batch size
     max_steps: int = 500  # Maximum number of steps per episode
     max_grad_norm: float = 1.0

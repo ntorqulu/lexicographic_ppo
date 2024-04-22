@@ -18,5 +18,5 @@ if __name__ == '__main__':
     # initialize lexico_ppo agent
     ppo = LexicoPPO(train_params=params, env=env)
     ppo.addCallbacks(PrintAverageReward(ppo, 300))
-    ppo.addCallbacks(TensorBoardLogging(ppo, f"StoreNuria/tensorboard_logs/{ppo.run_name}"))
+    ppo.addCallbacks(TensorBoardLogging(ppo, f"StoreNuria/tensorboard_logs/{type(ppo).__name__}/{ppo.run_name}"))
     ppo.train()
