@@ -11,9 +11,9 @@ import torch.nn as nn
 
 from agent import make_network, Agent
 from callbacks import Callback, UpdateCallback
+from utils.lmorlMemory import LexicoBuffer
 from utils.misc import _array_to_dict_tensor
 from utils.misc import *
-from utils.memory import Buffer
 
 # The MA environment does not follow the gym SA scheme, so it raises lots of warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -91,7 +91,7 @@ class lmorlPPO:
         self.logger.setLevel(logging.DEBUG)
         if len(self.logger.handlers) == 0:
             ch = logging.StreamHandler()
-            ch.setLevel(logging.DEBUG)
+            ch.setLevel(logging.INFO)
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
@@ -149,8 +149,7 @@ class lmorlPPO:
         self.beta = [list(reversed(range(1, self.reward_size + 1))) for _ in self.r_agents]
         self.eta = [[1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))] for _ in self.r_agents]
 
-        #KL penalty
-        self.kl_weight = train_params.kl_weight
+        self.kl_weight = [train_params.kl_weight for _ in self.r_agents]
         self.kl_target = train_params.kl_target
 
         # Initialize agents
@@ -164,8 +163,8 @@ class lmorlPPO:
                                     out_size=2).to(self.device),
                 learning_rate=train_params.learning_rate  # same learning rate for both actor and critic
             )
-            self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.gamma,
-                                    self.gae_lambda, 2, self.device)
+            self.buffer[k] = LexicoBuffer(self.o_size, self.batch_size, self.max_ep_length, self.gamma,
+                                          self.gae_lambda, 2, self.device)
 
     def environment_reset(self):
         non_tensor_observation, info = self.env.reset()
@@ -248,7 +247,6 @@ class lmorlPPO:
                         # s_value is a tensor of size 2, one for each reward
                         s_value[k] = self.agents[k].critic(observation[k])
             non_tensor_next_observation, reward, done, info = self.env.step(env_action)
-            reward = np.array([ag.r_vec for ag in self.env.agents.values()])
             # add weights to each component of the reward (r0, r1)
             r0 = reward[:, 0] * self.we_reward0
             r1 = reward[:, 1] * self.we_reward1
@@ -256,11 +254,18 @@ class lmorlPPO:
             ep_reward += r0 + r1  # size 2, where first component is the reward of agent 0 and second of agent 1
 
             # Update separate rewards per agent
-            for i, (r0_i, r1_i) in enumerate(zip(r0, r1)):
-                ep_separate_rewards_per_agent[i] += np.array([r0_i, r1_i])
+            for i in self.r_agents:
+                ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
 
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
+            next_observation = _array_to_dict_tensor(self.r_agents, non_tensor_next_observation, self.device)
+
+            with th.no_grad():
+                for k in self.r_agents:
+                    if not self.eval_mode:
+                        # value of the next state
+                        next_s_value = self.agents[k].critic(next_observation[k])
 
             # save the collected experience into the buffer
             if not self.eval_mode:
@@ -271,6 +276,7 @@ class lmorlPPO:
                         logprob[k],
                         reward[k],
                         s_value[k],
+                        next_s_value[k],
                         done[k]
                     )
             # end simulation
@@ -306,10 +312,6 @@ class lmorlPPO:
                 c.before_update()
         update_metrics = {}
 
-        with th.no_grad():
-            for k in self.r_agents:
-                value_ = self.agents[k].critic(self.environment_reset()[k])
-                self.buffer[k].compute_mc(value_.reshape(-1))
         for k in self.r_agents:
             # reset index of the buffer
             self.buffer[k].clear()
@@ -352,20 +354,22 @@ class lmorlPPO:
         # 3. Compute expected values with new critic policy
         predictions = self.agents[k].critic(batch['observations'])
 
+        with th.no_grad():
+            b_dones = batch["dones"]
+            b_dones = b_dones.unsqueeze(-1).repeat(1, predictions.shape[-1])  # Size([2500, 2])
+            target = batch["rewards"] + (
+                        self.discount * batch["next_values"] * (1 - b_dones))
+
         self.logger.debug(f"Shape of 'predictions': {predictions.shape}")
         self.logger.debug(f"Shape of 'observations': {batch['observations'].shape}")
 
         # 5. Compute the loss
-        critic_loss = 0.5 * ((predictions - batch['returns']) ** 2).mean(dim=0)
+        critic_loss = nn.MSELoss()(predictions, target)
         self.logger.debug(f"Shape of 'critic_loss': {critic_loss.shape}")
         # 6. Update the critic
-        update_metrics[f"Agent_{k}/Critic Loss_0"] = critic_loss[0].detach()
-        update_metrics[f"Agent_{k}/Critic Loss_1"] = critic_loss[1].detach()
-        critic_loss = critic_loss * self.v_coef
-        critic_loss = critic_loss.mean() # TODO: mean? [2]
+        update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
-        nn.utils.clip_grad_norm_(self.agents[k].critic.parameters(), self.max_grad_norm)
         self.agents[k].c_optimizer.step()
 
         # 7. Set the critic to eval mode
@@ -374,7 +378,7 @@ class lmorlPPO:
 
     def update_lagrange(self, k):
         for i in range(self.reward_size - 1):
-            self.j[k][i] = -th.tensor(list(self.recent_losses[k][i][25:])).mean()
+            self.j[k][i] = -th.tensor(list(self.recent_losses[k][i])).mean()
             # update the lagrange multipliers
         r = self.reward_size - 1
         for i in range(r):
@@ -393,8 +397,9 @@ class lmorlPPO:
         # update_metrics[f"Agent_{k}/First Order"] = first_order
         first_order_weights = th.tensor(first_order)
         # 2. Compute updated log probabilities and ratio
-        _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
-                                                                 batch['actions'])
+        _, _, logprob, _, = self.agents[k].actor.get_action(batch['observations'],
+                                                            batch['actions'])
+
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
         self.logger.debug(f"Agent {k} Log Ratio shape: {logratio.shape}")
@@ -404,30 +409,32 @@ class lmorlPPO:
         update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()
 
         # 3. Compute the advantage
-        mb_advantages = batch['advantages']  # Size([num batches, 500, 2])
-        advantage = normalize(mb_advantages)
-
+        with th.no_grad():
+            baseline = batch['values']
+            b_dones = batch["dones"]
+            b_dones = b_dones.unsqueeze(-1).repeat(1, baseline.shape[-1])  # Size([2500, 2])
+            outcome = batch['rewards'] + (self.discount * batch['next_values'] * (1 - b_dones))
+            advantage = (outcome - baseline).detach()
         first_order_weighted_advantages = th.sum(first_order_weights * advantage[:, 0:self.reward_size], dim=1)
+
+        kl_penalty = logratio
+        relative_kl_weights = [self.kl_weight[k] * first_order_weights[i] / sum(first_order_weights) for i in range(self.reward_size)]
 
         # 6. Compute the loss
         self.logger.debug(f"Agent {k} Ratio shape: {ratio.shape}")
 
-        actor_nonClip_loss = first_order_weighted_advantages * ratio  # Size([2500, 2])
-        self.logger.debug(f"Agent {k} actor_loss shape: {actor_nonClip_loss.shape}")
-        actor_clip_loss = first_order_weighted_advantages * th.clamp(ratio, 1 - self.clip, 1 + self.clip)  # Size([2500, 2])
-        self.logger.debug(f"Agent {k} actor_clip_loss shape: {actor_clip_loss.shape}")
-        # Calculate clip fraction and mean between columns (r0 and r1). Mean between batches
-        actor_loss = th.min(actor_nonClip_loss, actor_clip_loss).mean(dim=0)  # Size([2])
-        self.logger.debug(f"Agent {k} actor_loss shape: {actor_loss.shape}")
-        # mean for each reward (columns) and then mean of the means
+        actor_loss = (ratio * first_order_weighted_advantages - self.kl_weight[k] * kl_penalty).mean()
+        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
         actor_loss_reduced = -actor_loss  # size [1]
-        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss_reduced.detach()
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
+
         for i in range(self.reward_size):
-            actor_loss = ratio * advantage[:, i]
-            actor_clip_loss = advantage[:, i] * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
-            actor_loss = th.min(actor_loss, actor_clip_loss)
-            self.recent_losses[k][i].append(-actor_loss.mean())
+            self.recent_losses[k][i].append(-(ratio * advantage[:, i] - relative_kl_weights[i] * kl_penalty).mean())
+
+        if kl_penalty.mean() < self.kl_target / 1.5:
+            self.kl_weight[k] *= 0.5
+        elif kl_penalty.mean() > self.kl_target * 1.5:
+            self.kl_weight[k] *= 2.0
         return actor_loss_reduced
 
     def _finish_training(self):

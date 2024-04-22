@@ -333,6 +333,7 @@ class PPOmultiRewards:
         actor_loss = self.compute_loss(batch, k, update_metrics)
         self.agents[k].a_optimizer.zero_grad()
         actor_loss.backward()
+        th.nn.utils.clip_grad_norm_(self.agents[k].actor.parameters(), self.max_grad_norm)
         self.agents[k].a_optimizer.step()
         self.agents[k].actor.eval()
         return actor_loss
@@ -355,9 +356,11 @@ class PPOmultiRewards:
         update_metrics[f"Agent_{k}/Critic Loss_0"] = critic_loss[0].detach()
         update_metrics[f"Agent_{k}/Critic Loss_1"] = critic_loss[1].detach()
         critic_loss = critic_loss.mean()
+        update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
         critic_loss = critic_loss * self.v_coef
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
+        th.nn.utils.clip_grad_norm_(self.agents[k].critic.parameters(), self.max_grad_norm)
         self.agents[k].c_optimizer.step()
 
         # 7. Set the critic to eval mode
@@ -368,6 +371,9 @@ class PPOmultiRewards:
         # 2. Compute updated log probabilities and ratio
         _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
                                                                  batch['actions'])
+        #entropy_loss = entropy.mean()
+        #update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
+
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
         self.logger.debug(f"Agent {k} Log Ratio shape: {logratio.shape}")
@@ -388,17 +394,20 @@ class PPOmultiRewards:
         self.logger.debug(f"Agent {k} Ratio shape: {ratio.shape}")
 
         actor_nonClip_loss = weighted_advantage * ratio  # Size([2500])
+        update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_nonClip_loss.mean().detach()
         self.logger.debug(f"Agent {k} actor_loss shape: {actor_nonClip_loss.shape}")
+
         actor_clip_loss = weighted_advantage * th.clamp(ratio, 1 - self.clip, 1 + self.clip)  # Size([2500, 2])
         self.logger.debug(f"Agent {k} actor_clip_loss shape: {actor_clip_loss.shape}")
         # Calculate clip fraction and mean between columns (r0 and r1). Mean between batches
         actor_loss = th.min(actor_nonClip_loss, actor_clip_loss).mean()  # Size([])
         self.logger.debug(f"Agent {k} actor_loss: {actor_loss}")
-
+        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
         # mean for each reward (columns) and then mean of the means
         actor_loss_reduced = -actor_loss
+        #update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
-        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss_reduced.detach()
+
         return actor_loss_reduced
 
     def _finish_training(self):

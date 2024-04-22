@@ -7,6 +7,7 @@ from PPO import PPO
 from LexicoPPO import LexicoPPO
 from PPOmultiRewards import PPOmultiRewards
 from callbacks import PrintAverageReward, TensorBoardLogging
+from lmorlPPO import lmorlPPO
 
 if __name__ == '__main__':
     # Create the environment
@@ -16,7 +17,7 @@ if __name__ == '__main__':
     # Set parameters
     params = TrainingParameters(env_name="MultiAgentEthicalGathering-v1")
     # initialize lexico_ppo agent
-    ppo = LexicoPPO(train_params=params, env=env)
+    ppo = lmorlPPO(train_params=params, env=env)
     ppo.addCallbacks(PrintAverageReward(ppo, 300))
-    ppo.addCallbacks(TensorBoardLogging(ppo, f"StoreNuria/tensorboard_logs/{ppo.run_name}"))
+    ppo.addCallbacks(TensorBoardLogging(ppo, f"StoreNuria/tensorboard_logs/{type(ppo).__name__}/{ppo.run_name}"))
     ppo.train()

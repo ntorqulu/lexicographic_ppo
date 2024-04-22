@@ -4,22 +4,7 @@ from copy import deepcopy
 from src.utils.misc import Tensor
 
 
-@th.jit.script
-def compute_gae(b_values: Tensor, value_: Tensor, b_rewards: Tensor, b_dones: Tensor, gamma: float, gae_lambda: float):
-    values_ = th.cat((b_values[1:], value_))
-    b_dones = b_dones.unsqueeze(-1).repeat(1, values_.shape[-1])
-    gamma = gamma * (1 - b_dones)
-    deltas = b_rewards + gamma * values_ - b_values
-    advantages = th.zeros_like(b_values)
-    last_gaelambda = th.zeros_like(b_values[0])
-    for t in range(advantages.shape[0] - 1, -1, -1):
-        last_gaelambda = advantages[t] = deltas[t] + gamma[t] * gae_lambda * last_gaelambda
-
-    returns = advantages + b_values
-    return returns, advantages
-
-
-class Buffer:
+class LexicoBuffer:
     def __init__(self, o_size: int, size: int, max_steps: int, gamma: float, gae_lambda: float, reward_size: int, device: th.device):
         """
         Initialize the Buffer object.
@@ -46,10 +31,11 @@ class Buffer:
         self.b_log_probs = th.zeros(self.size, dtype=th.float32).to(device)
         self.b_rewards = th.zeros((size, reward_size), dtype=th.float32).to(device)
         self.b_values = deepcopy(self.b_rewards)
+        self.b_next_values = deepcopy(self.b_rewards)
         self.b_dones = deepcopy(self.b_log_probs)
         self.idx = 0
 
-    def store(self, observation, action, logprob, reward, value, done, next_observation, next_value):
+    def store(self, observation, action, logprob, reward, value, next_value, done):
         """
         Store a transition (observation, action, reward, next observation, done) in the buffer.
 
@@ -63,7 +49,6 @@ class Buffer:
             done (bool): Whether the episode is done.
         """
         self.b_observations[self.idx] = observation
-        self.b_next_observations[self.idx] = next_observation
         self.b_actions[self.idx] = action
         self.b_log_probs[self.idx] = logprob
         self.b_rewards[self.idx] = reward
@@ -79,11 +64,12 @@ class Buffer:
         n_episodes = self.size // self.max_steps
         return {
             'observations': self.b_observations.reshape(self.size, -1),
+            'rewards': self.b_rewards.reshape(self.size, -1),
+            'dones': self.b_dones.reshape(self.size),
             'actions': self.b_actions.reshape(self.size, -1),
             'log_probs': self.b_log_probs.reshape(self.size),
             'values': self.b_values.reshape((self.size, -1)),
-            'returns': self.returns.reshape((self.size, -1)),
-            'advantages': self.advantages.reshape((self.size, -1)),
+            'next_values': self.b_next_values.reshape((self.size, -1)),
 
         }
 
@@ -103,8 +89,3 @@ class Buffer:
         Clear the buffer.
         """
         self.idx = 0
-
-    def compute_mc(self, value_):
-        value_ = value_.view(1, -1)
-        self.returns, self.advantages = compute_gae(self.b_values, value_, self.b_rewards, self.b_dones, self.gamma,
-                                                    self.gae_lambda)
