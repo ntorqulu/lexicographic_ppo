@@ -1,3 +1,4 @@
+""""
 import collections
 import copy
 import json
@@ -9,9 +10,8 @@ from typing import List, Type, Dict
 
 import torch.nn as nn
 
-from agent import make_network, Agent
 from callbacks import Callback, UpdateCallback
-from utils.misc import _array_to_dict_tensor
+from agent import SoftmaxActor, Critic, Agent
 from utils.misc import *
 from utils.memory import Buffer
 
@@ -20,22 +20,13 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.simplefilter(action='ignore', category=DeprecationWarning)
 
-
 class LexicoPPO:
-    """
-        LexicoPPO class implements the Lexicographic variant of Proximal Policy Optimization (PPO) algorithm for
-        multi-agent reinforcement learning.
-        """
 
     callbacks: List[Callback] = []
 
     @staticmethod
     def actors_from_file(folder, dev='cpu', eval=True):
-        """
-        Creates the actors from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
-        """
+
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))
@@ -43,22 +34,16 @@ class LexicoPPO:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
                 actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
                                      out_size=a_size, eval_mode=eval).to(dev)
                 actor.load_state_dict(model)
-
                 agents.append(actor)
             return agents
 
     @staticmethod
     def agents_from_file(folder, dev='cpu', eval=True):
-        """
-        Creates the agents from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
-        """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))
@@ -66,8 +51,8 @@ class LexicoPPO:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
                 actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
                                      out_size=a_size, eval_mode=eval).to(dev)
                 actor.load_state_dict(model)
@@ -79,14 +64,6 @@ class LexicoPPO:
             return agents
 
     def __init__(self, train_params, env):
-        """
-        Initialize the LexicoPPO agent with training parameters and environment.
-
-        Args:
-            train_params (argparse.Namespace): Training parameters.
-            env: Multi-agent environment.
-
-        """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.DEBUG)
         if len(self.logger.handlers) == 0:
@@ -111,7 +88,7 @@ class LexicoPPO:
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         self.run_name = f"{train_params.env_name}_{train_params.seed}_{timestamp}_{np.random.randint(0, 100)}"
         self.save_dir = train_params.save_dir
-        self.eval_mode = False
+        self.eval_mode = train_params.eval_mode
         self.seed = train_params.seed
         self.th_deterministic = train_params.th_deterministic
         self.tot_steps = train_params.tot_steps  # total steps done in training
@@ -146,8 +123,22 @@ class LexicoPPO:
         self.j = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.recent_losses = [[collections.deque(maxlen=50) for _ in range(self.reward_size)] for _ in self.r_agents]
 
-        self.beta = [list(reversed(range(1, self.reward_size + 1))) for _ in self.r_agents]
-        self.eta = [[1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))] for _ in self.r_agents]
+        if train_params.beta_values is not None:
+            self.beta = [train_params.beta_values for _ in self.r_agents]
+        else:
+            self.beta = [list(reversed(range(1, self.reward_size + 1))) for _ in self.r_agents]
+        if train_params.eta_values is not None:
+            self.eta = [train_params.eta_values for _ in self.r_agents]
+        else:
+            self.eta = [[1e-3 * eta for eta in list(reversed(range(1, self.reward_size + 1)))] for _ in self.r_agents]
+
+        # control param
+        self.last_25_recent_losses = train_params.last_25_recent_losses
+        self.norm_loss = train_params.norm_loss
+        self.norm_adv = train_params.norm_adv
+        self.critic_times = train_params.critic_times
+        self.apply_entropy = train_params.apply_entropy
+        self.apply_entropy_recent_losses = train_params.apply_entropy_recent_losses
 
         # Initialize agents
         for k in self.r_agents:
@@ -163,18 +154,35 @@ class LexicoPPO:
             self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.gamma,
                                     self.gae_lambda, 2, self.device)
 
-    def environment_reset(self):
-        non_tensor_observation, info = self.env.reset()
-        observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
-        return observation
+    def environment_reset(self, env=None):
+        if env is None:
+            non_tensor_observation, info = self.env.reset()
+            observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
+            return observation
+        else:
+            non_tensor_observation, info = env.reset()
+            observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
+            return observation
 
     def environment_setup(self):
         if self.env is None:
-            raise ValueError("Environment is not set")
+            raise Exception("Environment not set")
+        obs, info = self.env.reset()
+        # Decentralized learning checks
+        if isinstance(obs, list):
+            if len(obs) != len(self.r_agents):
+                raise Exception("The environment returns a list of observations but the number of agents "
+                                "is not the same as the number of observations.")
+        elif isinstance(obs, np.ndarray):
+            if len(obs.shape) != 2:
+                raise Exception("The environment returns a numpy array of observations but the shape is not 2D. It "
+                                "should be (agents x observation).")
+        else:
+            raise Exception("Observation is not a list neither an array.")
+
         self.o_size = self.env.observation_space.sample().shape[0]
         self.a_size = self.env.action_space.n
 
-    # Always reset and set_Agents to none for now
     def train(self):
         self.environment_setup()
         # set seed for training
@@ -185,11 +193,14 @@ class LexicoPPO:
             'global_steps': 0,  # total steps done in training
             'global_episodes': 0,  # total episodes done in training
             'start_time': time.time(),  # start time of the training
-            'avg_episode_rewards': collections.deque(maxlen=500),
+            'avg_episode_rewards': collections.deque(maxlen=500),  # average reward per episode
+            'avg_episode_rewards_0': collections.deque(maxlen=500),  # average reward per episode for agent 0
+            'avg_episode_rewards_1': collections.deque(maxlen=500),  # average reward per episode for agent 1
             'agent_performance': {},
             'mean_loss': collections.deque(maxlen=500),
         }
 
+        # Example of computation num of updates:
         # 6 updates, each one consisting of 5 complete trajectories
         # tot_steps = 15000, batch_size = 2500
         # n_updates = 15000 // 2500 = 6
@@ -218,11 +229,12 @@ class LexicoPPO:
         self.logger.info(f"---------------------------------------")
         self.logger.info(f"Seed: {self.seed}")
 
+        # Start training
         for update in range(1, self.n_updates + 1):
             self.logger.info(f"Update {update}/{self.n_updates}")
             self.run_metrics["sim_start_time"] = time.time()
-            self.rollout()  # collect trajectories
-            self.update()  # update the policy
+            self.rollout()  # collect 2500 observations and store them in the buffer, 5 trajectories
+            self.update()  # update the policy using the buffer information
         self._finish_training()
 
     def rollout(self):
@@ -234,19 +246,23 @@ class LexicoPPO:
         env_action, ep_reward = [np.zeros(2) for _ in range(2)]
         ep_separate_rewards_per_agent = [np.zeros(2) for _ in range(len(self.r_agents))]
 
+        # iterate 2500 times, 5 trajectories
         for step in range(self.batch_size):
             self.run_metrics['global_steps'] += 1
             with th.no_grad():
                 for k in self.r_agents:
-                    # logprob of each action choosen
+                    # collect actions, logprobs and value functions for each agent using the actor old policy
                     env_action[k], action[k], logprob[k], _, = self.agents[k].actor.get_action(observation[k])
                     if not self.eval_mode:
-                        # s_value is a tensor of size 2, one for each reward
+                        # s_value is a tensor of size 2, one for each reward, (r0, r1)
                         s_value[k] = self.agents[k].critic(observation[k])
             non_tensor_next_observation, reward, done, info = self.env.step(env_action)
             # add weights to each component of the reward (r0, r1)
+            self.logger.debug(f"Reward: {reward}")
             r0 = reward[:, 0] * self.we_reward0
+            self.logger.debug(f"Reward 0: {r0}")
             r1 = reward[:, 1] * self.we_reward1
+            self.logger.debug(f"Reward 1: {r1}")
 
             ep_reward += r0 + r1  # size 2, where first component is the reward of agent 0 and second of agent 1
 
@@ -254,7 +270,8 @@ class LexicoPPO:
             for i in self.r_agents:
                 ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
 
-            reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
+            reward = _array_to_dict_tensor(self.r_agents, [[r0[0], r1[0]], [r0[1], r1[1]]], self.device)
+            self.logger.debug(f"Reward tensor: {reward}")
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
 
             # save the collected experience into the buffer
@@ -292,10 +309,14 @@ class LexicoPPO:
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward_0"] = agent_rewards[0].mean()
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward_1"] = agent_rewards[1].mean()
 
+            self.run_metrics["avg_episode_rewards_0"].append(agent_rewards[0].mean())
+            self.run_metrics["avg_episode_rewards_1"].append(agent_rewards[1].mean())
+
         return np.array(
             [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
     def update(self):
+        # Run callbacks
         for c in LexicoPPO.callbacks:
             if issubclass(type(c), UpdateCallback):
                 c.before_update()
@@ -303,21 +324,24 @@ class LexicoPPO:
 
         with th.no_grad():
             for k in self.r_agents:
+                # compute the advantage and the returns using the critic old policy
                 value_ = self.agents[k].critic(self.environment_reset()[k])
                 self.buffer[k].compute_mc(value_.reshape(-1))
+
         for k in self.r_agents:
             # reset index of the buffer
             self.buffer[k].clear()
-            # sample the buffer
+            # sample the buffer information, 2500 observations
             batch = self.buffer[k].sample()
             # for each agent, update the actor, the critic and the lagrange multipliers
-            # update the actor
+            # 1. update the actor
             for epoch in range(self.n_epochs):
                 actor_loss = self.update_actor(batch, k, update_metrics)
-            # update the critic
-            for epoch in range(self.n_epochs):
+            # 2. update the critic
+            for epoch in range(self.n_epochs * self.critic_times):
                 critic_loss = self.update_critic(batch, k, update_metrics)
-
+            # 3. update the lagrange multipliers
+            self.update_lagrange(k, update_metrics)
             loss = actor_loss + critic_loss
             update_metrics[f"Agent_{k}/Loss"] = loss.detach().cpu()
         self.update_metrics = update_metrics
@@ -331,34 +355,36 @@ class LexicoPPO:
         return update_metrics
 
     def update_actor(self, batch, k, update_metrics):
+        # 1. Set the actor to train mode
         self.agents[k].actor.train()
+        # 2. Compute the loss
         actor_loss = self.compute_loss(batch, k, update_metrics)
+        # 3. Update the actor
         self.agents[k].a_optimizer.zero_grad()
         actor_loss.backward()
+        # 4. Clip the gradients
         nn.utils.clip_grad_norm_(self.agents[k].actor.parameters(), self.max_grad_norm)
         self.agents[k].a_optimizer.step()
+        # 5. Set the actor to eval mode
         self.agents[k].actor.eval()
         return actor_loss
 
     def update_critic(self, batch, k, update_metrics):
-
-        # 2. Train the critic
+        # 1. Set the critic to train mode
         self.agents[k].critic.train()
-
-        # 3. Compute expected values with new critic policy
+        # 2. Compute expected values with new critic policy
         predictions = self.agents[k].critic(batch['observations'])
-
         self.logger.debug(f"Shape of 'predictions': {predictions.shape}")
         self.logger.debug(f"Shape of 'observations': {batch['observations'].shape}")
 
-        # 5. Compute the loss
-        critic_loss = 0.5 * ((predictions - batch['returns']) ** 2).mean(dim=1)
-        self.logger.debug(f"Shape of 'critic_loss': {critic_loss.shape}")
-        # 6. Update the critic
-        update_metrics[f"Agent_{k}/Critic Loss_0"] = critic_loss[0].detach()
-        update_metrics[f"Agent_{k}/Critic Loss_1"] = critic_loss[1].detach()
-        critic_loss = critic_loss.mean()
+        # 3. Compute the critic loss as the mean squared error between the expected values with the new critic policy
+        critic_loss_0 = th.mean((predictions[:, 0] - batch['returns'][:, 0]) ** 2)
+        critic_loss_1 = th.mean((predictions[:, 1] - batch['returns'][:, 1]) ** 2)
+        update_metrics[f"Agent_{k}/Critic Loss 0"] = critic_loss_0.detach()
+        update_metrics[f"Agent_{k}/Critic Loss 1"] = critic_loss_1.detach()
+        critic_loss = critic_loss_0 + critic_loss_1
         update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
+        # 6. Update the critic
         critic_loss = critic_loss * self.v_coef
         self.agents[k].c_optimizer.zero_grad()
         critic_loss.backward()
@@ -369,14 +395,18 @@ class LexicoPPO:
         self.agents[k].critic.eval()
         return critic_loss
 
-    def update_lagrange(self, k):
+    def update_lagrange(self, k, update_metrics):
+        # store the mean of the losses ONLY FOR THE FIRST REWARD (losses in positive)
         for i in range(self.reward_size - 1):
-            self.j[k][i] = -th.tensor(list(self.recent_losses[k][i])).mean()
-            # update the lagrange multipliers
+            self.j[k][i] = (-th.tensor(self.recent_losses[k][i])[25:]).mean()
+        # update the lagrange multiplier -> just the mu[k][0] for the first reward is updated
         r = self.reward_size - 1
         for i in range(r):
             self.mu[k][i] += self.eta[k][i] * (self.j[k][i] - (-self.recent_losses[k][i][-1]))
             self.mu[k][i] = max(0.0, self.mu[k][i])
+        update_metrics[f"Agent_{k}/Mu_0"] = self.mu[k][0]
+        print(f"Agent difference between losses: {self.j[k][0] - (-self.recent_losses[k][0][-1])}")
+        print(f"Agent {k} Mu_0: {self.mu[k][0]}")
 
     def compute_loss(self, batch, k, update_metrics):
         # 1. Compute weights only for the first order terms -> c_i in the paper
@@ -389,10 +419,11 @@ class LexicoPPO:
         first_order.append(self.beta[k][self.reward_size - 1])
         # update_metrics[f"Agent_{k}/First Order"] = first_order
         first_order_weights = th.tensor(first_order)
+        self.logger.debug(f"Agent {k} first order weights: {first_order_weights}")
         # 2. Compute updated log probabilities and ratio
         _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
                                                                  batch['actions'])
-
+        entropy_loss = entropy.mean()
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
         self.logger.debug(f"Agent {k} Log Ratio shape: {logratio.shape}")
@@ -402,39 +433,44 @@ class LexicoPPO:
         update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()
 
         # 3. Compute the advantage
-        mb_advantages = batch['advantages']  # Size([num batches, 500, 2])
-
+        mb_advantages = batch['advantages']  # Size([2500, 2])
+        self.logger.debug(f"Agent {k} Advantages: {mb_advantages}")
+        self.logger.debug(f"Agent {k} Advantages: {mb_advantages}")
         first_order_weighted_advantages = th.sum(first_order_weights * mb_advantages[:, 0:self.reward_size], dim=1)
         first_order_weighted_advantages = normalize(first_order_weighted_advantages)
-
+        self.logger.debug(f"Agent {k} first order weighted advantages: {first_order_weighted_advantages}")
         # 6. Compute the loss
         self.logger.debug(f"Agent {k} Ratio shape: {ratio.shape}")
 
         actor_nonClip_loss = first_order_weighted_advantages * ratio  # Size([2500, 2])
         update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_nonClip_loss.mean().detach()
         self.logger.debug(f"Agent {k} actor_loss shape: {actor_nonClip_loss.shape}")
-        actor_clip_loss = first_order_weighted_advantages * th.clamp(ratio, 1 - self.clip, 1 + self.clip)  # Size([2500, 2])
+        actor_clip_loss = first_order_weighted_advantages * th.clamp(ratio, 1 - self.clip,
+                                                                     1 + self.clip)  # Size([2500, 2])
         self.logger.debug(f"Agent {k} actor_clip_loss shape: {actor_clip_loss.shape}")
         # Calculate clip fraction and mean between columns (r0 and r1). Mean between batches
         actor_loss = th.min(actor_nonClip_loss, actor_clip_loss).mean()  # Size([2])
         self.logger.debug(f"Agent {k} actor_loss shape: {actor_loss.shape}")
         # mean for each reward (columns) and then mean of the means
         update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
-        actor_loss_reduced = -actor_loss  # size [1]
+        actor_loss_reduced = -actor_loss - self.entropy_coef * entropy_loss  # size [1]
+        update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
 
-        past_advantages = normalize(batch['advantages'])
+        normalized_separate_advantages = normalize(mb_advantages, dim=0)
         for i in range(self.reward_size):
-            actor_loss = ratio * past_advantages[:, i]
-            actor_clip_loss = past_advantages[:, i] * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
-            actor_loss = th.min(actor_loss, actor_clip_loss)
-            self.recent_losses[k][i].append(-actor_loss.mean())
+            actor_loss = ratio * normalized_separate_advantages[:, i]
+            actor_clip_loss = normalized_separate_advantages[:, i] * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
+            actor_loss = th.min(actor_loss, actor_clip_loss).mean()
+            self.recent_losses[k][i].append(-actor_loss - self.entropy_coef * entropy_loss)
         return actor_loss_reduced
 
     def _finish_training(self):
         # Log relevant data from training
         self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
         self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
+        self.logger.info(f"Average reward 0: {np.mean(self.run_metrics['avg_episode_rewards_0'])}")
+        self.logger.info(f"Average reward 1: {np.mean(self.run_metrics['avg_episode_rewards_1'])}")
         self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
         self.logger.info(f"Number of updates: {self.n_updates}")
         # save the model
@@ -514,3 +550,4 @@ class LexicoPPO:
             LexicoPPO.callbacks.append(callbacks)
         else:
             raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")
+"""

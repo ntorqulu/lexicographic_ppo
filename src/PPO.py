@@ -1,19 +1,18 @@
-import collections
+import argparse
 import copy
 import json
 import logging
 import os
 import time
 import warnings
-from typing import List, Type, Dict
 
-import torch.nn as nn
+from collections import deque
+from agent import SoftmaxActor, Critic, Agent
 
-from agent import make_network, Agent
-from callbacks import Callback, UpdateCallback
-from utils.misc import _array_to_dict_tensor
-from utils.misc import *
 from utils.memory import Buffer
+from utils.misc import *
+import torch.nn as nn
+from callbacks import UpdateCallback, Callback
 
 # The MA environment does not follow the gym SA scheme, so it raises lots of warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -21,12 +20,17 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 warnings.simplefilter(action='ignore', category=DeprecationWarning)
 
 
-class PPO:
-    """
-        LexicoPPO class implements the Lexicographic variant of Proximal Policy Optimization (PPO) algorithm for
-        multi-agent reinforcement learning.
-        """
+def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, astype: Type = th.float32) -> Dict:
+    # Check if the provided device is already the current device
+    is_same_device = (device == th.cuda.current_device()) if device.type == 'cuda' else (device == th.device('cpu'))
 
+    if is_same_device:
+        return {k: th.as_tensor(d, dtype=astype) for k, d in zip(agents, data)}
+    else:
+        return {k: th.as_tensor(d, dtype=astype).to(device) for k, d in zip(agents, data)}
+
+
+class PPO:
     callbacks: List[Callback] = []
 
     @staticmethod
@@ -43,10 +47,9 @@ class PPO:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
-                actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
-                                     out_size=a_size, eval_mode=eval).to(dev)
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
+                actor = SoftmaxActor(o_size, a_size, args.h_size, args.h_layers, eval=eval).to(dev)
                 actor.load_state_dict(model)
 
                 agents.append(actor)
@@ -66,178 +69,202 @@ class PPO:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
-                actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
-                                     out_size=a_size, eval_mode=eval).to(dev)
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
+                reward_size = 1
+                actor = SoftmaxActor(o_size, a_size, args.h_size, args.h_layers, eval=eval).to(dev)
                 actor.load_state_dict(model)
-                critic = make_network(network_purpose='prediction', in_size=o_size, hidden_size=args.h_size,
-                                      out_size=args.reward_size, eval_mode=eval).to(dev)
+                critic = Critic(o_size, reward_size, args.h_size, args.h_layers).to(dev)
                 critic.load_state_dict(th.load(folder + f"/critic_{k}.pth"))
 
-                agents.append(Agent(actor, critic, args.learning_rate))
+                agents.append(Agent(actor, critic, args.actor_lr, args.critic_lr))
             return agents
 
-    def __init__(self, train_params, env):
-        """
-        Initialize the LexicoPPO agent with training parameters and environment.
+    def __init__(self, args, env, run_name=None):
 
-        Args:
-            train_params (argparse.Namespace): Training parameters.
-            env: Multi-agent environment.
-
-        """
+        # Logging
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.DEBUG)
+        self.logger.setLevel(logging.ERROR)
+        # Check if the logger already has a handler
         if len(self.logger.handlers) == 0:
             ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)
+            ch.setLevel(logging.DEBUG)
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
-        self.init_args = train_params
+        if type(args) is dict:
+            args = argparse.Namespace(**args)
+        elif type(args) is argparse.Namespace:
+            args = args
+        self.init_args = args
 
-        self.env = env
-        self.tag = train_params.tag
+        for k, v in self.init_args.__dict__.items():
+            setattr(self, k, v)
+        self.entropy_value = self.ent_coef
+        if run_name is not None:
+            self.run_name = run_name
+        else:
+            # Get and format day and time
+            timestamp = time.strftime("%m-%d_%H-%M", time.localtime())
+            self.run_name = f"{self.env_name}__{self.tag}__{self.seed}__{timestamp}__{np.random.randint(0, 100)}"
+
+        # Action-Space
         self.o_size = env.observation_space.sample().shape[0]
-        self.a_size = env.action_space.n  # number of actions
-        self.h_size = train_params.h_layers_size
-        self.reward_size = train_params.reward_size
-        self.r_agents = range(train_params.n_agents)
+        self.a_size = env.action_space.n
 
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        self.run_name = f"{train_params.env_name}_{train_params.seed}_{timestamp}_{np.random.randint(0, 100)}"
-        self.save_dir = train_params.save_dir
-        self.eval_mode = False
-        self.seed = train_params.seed
-        self.th_deterministic = train_params.th_deterministic
-        self.tot_steps = train_params.tot_steps  # total steps done in training
-        self.max_ep_length = train_params.max_steps  # max number of steps per episode is always 500
-        self.batch_size = train_params.batch_size
-        self.n_epochs = train_params.n_epochs
-        self.device = set_torch(n_cpus=train_params.n_cpus, cuda=False)
-
-        # metrics
+        # Attributes
+        self.r_agents = range(self.n_agents)
         self.run_metrics = None
         self.update_metrics = {}
         self.sim_metrics = {}
+        self.folder = None
+        self.eval_mode = False
 
-        # Behaviours
-        self.learning_rate = train_params.learning_rate
-        self.clip = train_params.clip
-        self.v_coef = train_params.v_coef
-        self.entropy_coef = train_params.entropy_coef
-        self.max_grad_norm = train_params.max_grad_norm
-        self.discount = train_params.discount
-        self.gae_lambda = train_params.gae_lambda
-        self.gamma = train_params.gamma
+        #   Torch init
+        self.device = set_torch(self.n_cpus, self.cuda)
 
-        # Actor-critic
+        #   Actor-Critic
         self.n_updates = None
-        self.agents = {}
-        self.buffer = {}
+        self.buffer = None
+        self.agents, self.buffer = {}, {}
 
-        # Initialize agents
         for k in self.r_agents:
-            # Create an Agent object for each agent in the environment
-            # It contains the actor and critic networks, and the optimizers
             self.agents[k] = Agent(
-                actor=make_network(network_purpose='policy', in_size=self.o_size, hidden_size=self.h_size,
-                                   out_size=self.a_size).to(self.device),
-                critic=make_network(network_purpose='prediction', in_size=self.o_size, hidden_size=self.h_size,
-                                    out_size=1).to(self.device),
-                learning_rate=train_params.learning_rate  # same learning rate for both actor and critic
+                SoftmaxActor(self.o_size, self.a_size, self.h_size, self.h_layers).to(self.device),
+                Critic(self.o_size, self.reward_size, self.h_size, self.h_layers).to(self.device),
+                self.actor_lr,
+                self.critic_lr,
             )
-            self.buffer[k] = Buffer(self.o_size, self.batch_size, self.max_ep_length, self.gamma,
-                                    self.gae_lambda, 1, self.device)
+            self.buffer[k] = Buffer(self.o_size, self.reward_size, self.batch_size, self.max_steps, self.gamma,
+                                    self.gae_lambda, self.device)
 
-    def environment_reset(self):
-        non_tensor_observation, info = self.env.reset()
-        observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
-        return observation
+        self.env = env
 
-    def environment_setup(self):
-        if self.env is None:
-            raise ValueError("Environment is not set")
-        self.o_size = self.env.observation_space.sample().shape[0]
-        self.a_size = self.env.action_space.n
+    def environment_reset(self, env=None):
+        if env is None:
+            non_tensor_observation, info = self.env.reset()
+            observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
+            return observation
+        else:
+            non_tensor_observation, info = env.reset()
+            observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
+            return observation
 
-    # Always reset and set_Agents to none for now
-    def train(self):
-        self.environment_setup()
-        # set seed for training
-        set_seeds(self.seed, self.th_deterministic)
+    def update(self):
+        # Run callbacks
+        for c in PPO.callbacks:
+            if issubclass(type(c), UpdateCallback):
+                c.before_update()
 
-        # Reset run metrics
-        self.run_metrics = {
-            'global_steps': 0,  # total steps done in training
-            'global_episodes': 0,  # total episodes done in training
-            'start_time': time.time(),  # start time of the training
-            'avg_episode_rewards': collections.deque(maxlen=500),
-            'agent_performance': {},
-            'mean_loss': collections.deque(maxlen=500),
-        }
+        th.set_num_threads(self.n_cpus)
+        update_metrics = {}
 
-        # 6 updates, each one consisting of 5 complete trajectories
-        # tot_steps = 15000, batch_size = 2500
-        # n_updates = 15000 // 2500 = 6
-        # max_ep_length = 500
-        # num_trajectories = 2500 // 500 = 5
-        self.n_updates = self.tot_steps // self.batch_size
+        with th.no_grad():
+            for k in self.r_agents:
+                value_ = self.agents[k].critic(self.environment_reset()[k])
+                # tensor([-0.5803]), size 1
+                self.buffer[k].compute_mc(value_.reshape(-1))
 
-        # log relevant information about the training
-        self.logger.info(f"Training {self.run_name}")
-        self.logger.info("----------------TRAINING----------------")
-        self.logger.info(f"Environment: {self.env}")
-        self.logger.info(f"Number of agents: {len(self.r_agents)}")
-        self.logger.info(f"Reward size: {self.reward_size}")
-        self.logger.info(f"Total steps: {self.tot_steps}")
-        self.logger.info(f"Batch size: {self.batch_size}")
-        self.logger.info(f"Max steps per episode: {self.max_ep_length}")
-        self.logger.info(f"Number of updates: {self.n_updates}")
-        self.logger.info(f"Number of hidden units: {self.h_size}")
-        self.logger.info(f"---------------------------------------")
-        self.logger.info(f"Learning rate: {self.learning_rate}")
-        self.logger.info(f"Discount factor: {self.discount}")
-        self.logger.info(f"---------------------------------------")
-        self.logger.info(f"Clip: {self.clip}")
-        self.logger.info(f"---------------------------------------")
-        self.logger.info(f"Value coefficient: {self.v_coef}")
-        self.logger.info(f"---------------------------------------")
-        self.logger.info(f"Seed: {self.seed}")
+        # Optimize the policy and value networks
+        for k in self.r_agents:
+            self.buffer[k].clear()
+            b = self.buffer[k].sample()
 
-        for update in range(1, self.n_updates + 1):
-            self.logger.info(f"Update {update}/{self.n_updates}")
-            self.run_metrics["sim_start_time"] = time.time()
-            self.rollout()  # collect trajectories
-            self.update()  # update the policy
-        self._finish_training()
+            # Actor optimization
+            for epoch in range(self.n_epochs):
+                _, _, logprob, entropy = self.agents[k].actor.get_action(b['observations'], b['actions'])
+                # logprob and entropy have shape [5, 500].
+                # 5 is the number of collected trajectories, and 500 the number of steps
+                entropy_loss = entropy.mean()  # mean of all elements in the tensor. sum (all the values) / (5*500 elem)
+                # entropy is now a scalar
+                update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
+
+                logratio = logprob - b['logprobs']  # still size [5, 500]
+                ratio = logratio.exp()  # still size [5, 500]
+                update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()  # mean of all the values in the tensor
+
+                mb_advantages = b['advantages']  # size [5, 500, 1]
+                # separate the advantages into [5, 500] tensors and normalize them
+                mb_advantages = normalize(mb_advantages[:, :, 0]) # we only have one here
+
+                actor_loss = mb_advantages * ratio # [5, 500]
+                update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_loss.mean().detach()
+
+                actor_clip_loss = mb_advantages * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
+                # Calculate clip fraction
+                actor_loss = th.min(actor_loss, actor_clip_loss).mean()
+                update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
+
+                actor_loss = -actor_loss - self.entropy_value * entropy_loss
+                update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss.detach()
+
+                self.agents[k].a_optimizer.zero_grad(True)
+                actor_loss.backward()
+                nn.utils.clip_grad_norm_(self.agents[k].actor.parameters(), self.max_grad_norm)
+                self.agents[k].a_optimizer.step()
+
+            # Critic optimization
+            for epoch in range(self.n_epochs * self.critic_times):
+                values = self.agents[k].critic(b['observations']).squeeze() # size [5, 500]
+                # and b['returns'] size [5, 500, 1]
+                # No value clipping
+                # get only the first b['returns'], we only have one objective here
+                returns = b['returns'][:, :, 0]
+                critic_loss = 0.5 * ((values - returns) ** 2).mean()
+                print(f"Agent_{k}/Critic Loss Non-Clipped", critic_loss.detach())
+
+                update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
+
+                critic_loss = critic_loss * self.v_coef
+
+                self.agents[k].c_optimizer.zero_grad(True)
+                critic_loss.backward()
+                nn.utils.clip_grad_norm_(self.agents[k].critic.parameters(), self.max_grad_norm)
+                self.agents[k].c_optimizer.step()
+
+            loss = actor_loss - entropy_loss * self.entropy_value + critic_loss
+            update_metrics[f"Agent_{k}/Loss"] = loss.detach().cpu()
+            self.logger.debug(f"end epoch")
+        self.update_metrics = update_metrics
+        mean_loss = np.array([self.update_metrics[f"Agent_{k}/Loss"] for k in
+                              self.r_agents]).mean()
+        self.run_metrics["mean_loss"].append(mean_loss)
+
+        # Run callbacks
+        for c in PPO.callbacks:
+            if issubclass(type(c), UpdateCallback):
+                c.after_update()
+
+        return update_metrics
 
     def rollout(self):
-        sim_metrics = {"reward_per_agent": np.zeros(len(self.r_agents))}
-        observation = self.environment_reset()  # tensor
-        # set actions, logprobs and value functions to 0 for all agents
+        sim_metrics = {"reward_per_agent": np.zeros(self.n_agents)}
+
+        observation = self.environment_reset()
+
         action, logprob, s_value = [{k: 0 for k in self.r_agents} for _ in range(3)]
-        env_action, ep_reward = [np.zeros(2) for _ in range(2)]
+        env_action, ep_reward = [np.zeros(self.n_agents) for _ in range(2)]
 
         for step in range(self.batch_size):
-            self.run_metrics['global_steps'] += 1
+            self.run_metrics["global_step"] += 1
+
             with th.no_grad():
                 for k in self.r_agents:
-                    # logprob of each action choosen
-                    env_action[k], action[k], logprob[k], _, = self.agents[k].actor.get_action(observation[k])
+                    (
+                        env_action[k],
+                        action[k],
+                        logprob[k],
+                        _,
+                    ) = self.agents[k].actor.get_action(observation[k])
                     if not self.eval_mode:
-                        # s_value is a tensor of size 2, one for each reward
                         s_value[k] = self.agents[k].critic(observation[k])
-            non_tensor_next_observation, reward, done, info = self.env.step(env_action)
-            #print(f"Reward: {reward}")
+            # TODO: Change action -> env_action mapping
+            non_tensor_observation, reward, done, info = self.env.step(env_action)
             ep_reward += reward
-            #print(f"Ep Reward: {ep_reward}")
+
             reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
-
-            # save the collected experience into the buffer
             if not self.eval_mode:
                 for k in self.r_agents:
                     self.buffer[k].store(
@@ -248,138 +275,124 @@ class PPO:
                         s_value[k],
                         done[k]
                     )
-            # end simulation
+
+            observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
+
+            # End of sim
             if all(list(done.values())):
-                self.run_metrics['global_episodes'] += 1
+                self.run_metrics["ep_count"] += 1
                 sim_metrics["reward_per_agent"] += ep_reward
-                ep_reward = np.zeros(len(self.r_agents))
+                ep_reward = np.zeros(self.n_agents)
+                # Reset environment
                 observation = self.environment_reset()
-        # rewards are averaged over the number of trajectories done -> 5
-        # average reward per agent per trajectory
-        sim_metrics["reward_per_agent"] /= (self.batch_size / self.max_ep_length)
-        self.run_metrics["avg_episode_rewards"].append(sim_metrics["reward_per_agent"].mean())
+        sim_metrics["reward_per_agent"] /= (self.batch_size / self.max_steps)
+
+        self.run_metrics["avg_reward"].append(sim_metrics["reward_per_agent"].mean())
+        # Save mean reward per agent
         for k in self.r_agents:
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward"] = sim_metrics["reward_per_agent"][k].mean()
-        print(f"Run metrics: {self.run_metrics}")
         return np.array(
             [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
-    def update(self):
-        for c in PPO.callbacks:
-            if issubclass(type(c), UpdateCallback):
-                c.before_update()
-        update_metrics = {}
+    def train(self, reset=True, set_agents=None):
+        self.environment_setup()
+        # set seed for training
+        set_seeds(self.seed, self.th_deterministic)
 
-        with th.no_grad():
+        if reset:
+            for k, v in self.init_args.__dict__.items():
+                setattr(self, k, v)
+        if set_agents is None:
             for k in self.r_agents:
-                value_ = self.agents[k].critic(self.environment_reset()[k])
-                self.buffer[k].compute_mc(value_.reshape(-1))
-        for k in self.r_agents:
-            # reset index of the buffer
-            self.buffer[k].clear()
-            # sample the buffer
-            batch = self.buffer[k].sample()
-            # for each agent, update the actor, the critic and the lagrange multipliers
-            # update the actor
-            for epoch in range(self.n_epochs):
-                actor_loss = self.update_actor(batch, k, update_metrics)
-            # update the critic
-            for epoch in range(self.n_epochs):
-                critic_loss = self.update_critic(batch, k, update_metrics)
+                self.agents[k] = Agent(
+                    SoftmaxActor(self.o_size, self.a_size, self.h_size, self.h_layers).to(self.device),
+                    Critic(self.o_size, self.reward_size, self.h_size, self.h_layers).to(self.device),
+                    self.init_args.actor_lr,
+                    self.init_args.critic_lr,
+                )
+                self.buffer[k] = Buffer(self.o_size, self.reward_size, self.batch_size, self.max_steps, self.gamma,
+                                        self.gae_lambda, self.device)
+        else:
+            self.agents = set_agents
 
-            loss = actor_loss + critic_loss
-            update_metrics[f"Agent_{k}/Loss"] = loss.detach().cpu()
-        self.update_metrics = update_metrics
-        mean_loss = np.array([self.update_metrics[f"Agent_{k}/Loss"] for k in self.r_agents]).mean()
-        self.run_metrics["mean_loss"].append(mean_loss)
+        # Reset run metrics:
+        self.run_metrics = {
+            'global_step': 0,
+            'ep_count': 0,
+            'start_time': time.time(),
+            'avg_reward': deque(maxlen=500),
+            'agent_performance': {},
+            'mean_loss': deque(maxlen=500),
+        }
 
-        # Run callbacks
-        for c in PPO.callbacks:
-            if issubclass(type(c), UpdateCallback):
-                c.after_update()
-        return update_metrics
+        # Log relevant info before training
+        self.logger.info(f"Training {self.run_name}")
+        self.logger.info("-------------------TRAIN----------------")
+        self.logger.info(f"Environment: {self.env}")
+        self.logger.info(f"Number of agents: {self.n_agents}")
+        self.logger.info(f"Number of rewards: {self.reward_size}")
+        self.logger.info(f"Number of steps: {self.batch_size}")
+        self.logger.info(f"Total steps: {self.tot_steps}")
+        self.logger.info(f"Number of hidden layers: {self.h_layers}")
+        self.logger.info(f"Number of hidden units: {self.h_size}")
+        self.logger.info("----------------------------------------")
+        self.logger.info(f"Actor learning rate: {self.actor_lr}")
+        self.logger.info(f"Critic learning rate: {self.critic_lr}")
+        self.logger.info(f"Entropy coefficient: {self.ent_coef}")
+        self.logger.info("-------------------CPV------------------")
+        self.logger.info(f"Clip: {self.clip}")
+        self.logger.info("-------------------ENT------------------")
+        self.logger.info("-------------------LRS------------------")
+        self.logger.info("----------------------------------------")
+        self.logger.info(f"Seed: {self.seed}")
 
-    def update_actor(self, batch, k, update_metrics):
-        self.agents[k].actor.train()
-        actor_loss = self.compute_loss(batch, k, update_metrics)
-        self.agents[k].a_optimizer.zero_grad()
-        actor_loss.backward()
-        nn.utils.clip_grad_norm_(self.agents[k].actor.parameters(), self.max_grad_norm)
-        self.agents[k].a_optimizer.step()
-        self.agents[k].actor.eval()
-        return actor_loss
+        # Training loop
+        self.n_updates = self.tot_steps // self.batch_size
+        for update in range(1, self.n_updates + 1):
+            self.run_metrics["sim_start_time"] = time.time()
 
-    def update_critic(self, batch, k, update_metrics):
+            self.rollout()
 
-        # 2. Train the critic
-        self.agents[k].critic.train()
+            self.update()
 
-        # 3. Compute expected values with new critic policy
-        predictions = self.agents[k].critic(batch['observations'])
+        self._finish_training()
 
-        # 5. Compute the loss
-        critic_loss = 0.5 * ((predictions - batch['returns']) ** 2).mean()
-        self.logger.debug(f"Agent {k} Critic Loss: {critic_loss}")
-        self.logger.debug(f"Agent {k} Critic Loss shape: {critic_loss.shape}")
-        update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
-        critic_loss = critic_loss * self.v_coef
-        # 6. Update the critic
-        self.agents[k].c_optimizer.zero_grad()
-        critic_loss.backward()
-        nn.utils.clip_grad_norm_(self.agents[k].critic.parameters(), self.max_grad_norm)
-        self.agents[k].c_optimizer.step()
+    def environment_setup(self):
+        if self.env is None:
+            raise Exception("Environment not set")
+        obs, info = self.env.reset()
+        # Decentralized learning checks
+        if isinstance(obs, list):
+            if len(obs) != self.n_agents:
+                raise Exception("The environment returns a list of observations but the number of agents "
+                                "is not the same as the number of observations.")
+        elif isinstance(obs, np.ndarray):
+            if len(obs.shape) != 2:
+                raise Exception("The environment returns a numpy array of observations but the shape is not 2D. It "
+                                "should be (agents x observation).")
+        else:
+            raise Exception("Observation is not a list neither an array.")
 
-        # 7. Set the critic to eval mode
-        self.agents[k].critic.eval()
-        return critic_loss
-
-    def compute_loss(self, batch, k, update_metrics):
-        # 2. Compute updated log probabilities and ratio
-        _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'], batch['actions'])
-        entropy_loss = entropy.mean()
-        update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
-        logratio = logprob - batch['log_probs']
-        self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
-        self.logger.debug(f"Agent {k} Log Ratio shape: {logratio.shape}")
-        ratio = logratio.exp()  # size [num batches, 500]
-        self.logger.debug(f"Agent {k} Ratio: {ratio}")
-        self.logger.debug(f"Agent {k} Ratio shape: {ratio.shape}")
-        update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()
-
-        # 3. Compute the advantage
-        mb_advantages = batch['advantages']  # Size([num batches, 500, 1])
-        advantage = normalize(mb_advantages)
-
-        # 6. Compute the loss
-        ratio = ratio.unsqueeze(-1).repeat(1, advantage.shape[-1])  # Size([num batches, 500, 1])
-        self.logger.debug(f"Agent {k} Ratio shape: {ratio.shape}")
-        actor_loss = advantage * ratio  # Size([num batches, 500, 1])
-        self.logger.debug(f"Agent {k} actor_loss shape: {actor_loss.shape}")
-        update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_loss.mean(0).detach()
-        actor_clip_loss = advantage * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
-        self.logger.debug(f"Agent {k} actor_clip_loss shape: {actor_clip_loss.shape}")
-        # Calculate clip fraction
-        actor_loss = th.min(actor_loss, actor_clip_loss).mean()
-        self.logger.debug(f"Agent {k} actor_loss shape: {actor_loss.shape}")
-        update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
-        actor_loss = -actor_loss - self.entropy_coef * entropy_loss
-        update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss.detach()
-        return actor_loss
+        self.o_size = self.env.observation_space.sample().shape[0]
+        self.a_size = self.env.action_space.n
+        # TODO: Set the action space, translate actions to env_actions
 
     def _finish_training(self):
         # Log relevant data from training
         self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
-        self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
-        self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
+        self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_reward'])}")
+        self.logger.info(f"Average loss: {np.mean(self.run_metrics['mean_loss'])}")
+        self.logger.info(f"Std mean loss: {np.std(self.run_metrics['mean_loss'])}")
+        self.logger.info(f"Number of episodes: {self.run_metrics['ep_count']}")
         self.logger.info(f"Number of updates: {self.n_updates}")
-        # save the model
+
         self.save_experiment_data()
 
     def save_experiment_data(self, folder=None, ckpt=False):
         config = self.init_args
-        # Create new folder in to save the model using tag, n_steps, tot_steps and seed as name
+        # Create new folder in to save the model using tag, batch_size, tot_steps and seed as name
         if folder is None:
-            folder = f"{config.save_dir}/{config.tag}/{config.tot_steps}_{config.batch_size // config.max_steps}_{config.seed}"
+            folder = f"{config.save_dir}/{config.tag}/{config.batch_size}_{config.tot_steps // config.max_steps}_{config.seed}"
 
         # Check if folder's config file is the same as the current config
         def diff_config(path):
@@ -435,7 +448,7 @@ class PPO:
             json.dump(vars(config), f, indent=4)
         return folder
 
-    def addCallbacks(self, callbacks, private=False):
+    def addCallbacks(self, callbacks):
         if isinstance(callbacks, list):
             for c in callbacks:
                 if not issubclass(type(c), Callback):
@@ -449,3 +462,23 @@ class PPO:
             PPO.callbacks.append(callbacks)
         else:
             raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")
+
+    def load_checkpoint(self, folder):
+        # Load the args from the folder
+        with open(folder + "/config.json", "r") as f:
+            args = argparse.Namespace(**json.load(f))
+            # Load the model
+            agents = {}
+            for k in range(args.n_agents):
+                model_actor = th.load(folder + f"/actor_{k}.pth")
+                o_size = model_actor["hidden.0.weight"].shape[1]
+                a_size = model_actor["output.weight"].shape[0]
+                actor = SoftmaxActor(o_size, a_size, args.h_size, args.h_layers, eval=True).to(self.device)
+                actor.load_state_dict(model_actor)
+
+                model_critic = th.load(folder + f"/critic_{k}.pth")
+                critic = Critic(o_size, args.h_size, args.h_layers).to(self.device)
+                critic.load_state_dict(model_critic)
+
+                agents[k] = Agent(actor, critic, args.actor_lr, args.critic_lr)
+            self.agents = agents
