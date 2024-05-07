@@ -11,22 +11,29 @@ class TrainingParameters:
     save_dir: str = "StoreNuria"  # Folder to save the model
     n_agents: int = 2  # Number of agents in the environment
     reward_size: int = 2  # Size of the reward vector
-    tot_steps: int = 250000  # Total number of steps
+    tot_steps: int = 25000  # Total number of steps
     batch_size: int = 2500  # Batch size
     max_steps: int = 500  # Maximum number of steps per episode
     max_grad_norm: float = 1.0
     n_epochs: int = 10  # Number of epochs
-    learning_rate: float = 0.001  # TODO: just one learning rate for both actor and critic?
-    clip = 0.2
-    entropy_coef: float = 0.04
+    critic_times: int = 1  # Number of critic updates per epoch
+    actor_lr: float = 0.0003
+    critic_lr: float = 0.001
+    clip: float = 0.2
+    ent_coef: float = 0.04
     gae_lambda: float = 0.95
-    gamma = 0.8
+    gamma: float = 0.8
     v_coef: float = 0.5  # Coefficient for the value loss
-    n_cpus = 8  # Number of cpus to use
-    h_layers_size: int = 16  # TODO: from IPPO, SIZE OF THE HIDDEN LAYERS
-    # from lexico
-    discount: float = 0.95
-    kl_weight: float = 1.0
-    kl_target: float = 0.025
+    n_cpus: int = 1  # Number of cpus to use
+    cuda: bool = False
+    h_size: int = 128
+    h_layers: int = 2
+    # from multireward
     we_reward0: float = 1
-    we_reward1: float = 2.6
+    we_reward1: float = 10
+    execution_class: str = "LexicoPPO"  # Default to lmorlPPO
+    # control param
+    eval_mode: bool = False
+    critic_times: int = 1
+    beta_values: list = None
+    eta_values: list = None

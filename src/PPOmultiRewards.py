@@ -1,3 +1,4 @@
+"""
 import collections
 import copy
 import json
@@ -22,20 +23,11 @@ warnings.simplefilter(action='ignore', category=DeprecationWarning)
 
 
 class PPOmultiRewards:
-    """
-        LexicoPPO class implements the Lexicographic variant of Proximal Policy Optimization (PPO) algorithm for
-        multi-agent reinforcement learning.
-        """
 
     callbacks: List[Callback] = []
 
     @staticmethod
     def actors_from_file(folder, dev='cpu', eval=True):
-        """
-        Creates the actors from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
-        """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))
@@ -43,8 +35,8 @@ class PPOmultiRewards:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
                 actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
                                      out_size=a_size, eval_mode=eval).to(dev)
                 actor.load_state_dict(model)
@@ -54,11 +46,7 @@ class PPOmultiRewards:
 
     @staticmethod
     def agents_from_file(folder, dev='cpu', eval=True):
-        """
-        Creates the agents from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
-        """
+
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))
@@ -66,8 +54,8 @@ class PPOmultiRewards:
             agents = []
             for k in range(args.n_agents):
                 model = th.load(folder + f"/actor_{k}.pth")
-                o_size = model["line1.weight"].shape[1]
-                a_size = model["line2.weight"].shape[0]
+                o_size = model["hidden.0.weight"].shape[1]
+                a_size = model["output.weight"].shape[0]
                 actor = make_network(network_purpose='policy', in_size=o_size, hidden_size=args.h_layers_size,
                                      out_size=a_size, eval_mode=eval).to(dev)
                 actor.load_state_dict(model)
@@ -79,14 +67,7 @@ class PPOmultiRewards:
             return agents
 
     def __init__(self, train_params, env):
-        """
-        Initialize the LexicoPPO agent with training parameters and environment.
 
-        Args:
-            train_params (argparse.Namespace): Training parameters.
-            env: Multi-agent environment.
-
-        """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.DEBUG)
         if len(self.logger.handlers) == 0:
@@ -177,6 +158,8 @@ class PPOmultiRewards:
             'global_episodes': 0,  # total episodes done in training
             'start_time': time.time(),  # start time of the training
             'avg_episode_rewards': collections.deque(maxlen=500),
+            'avg_episode_rewards_0': collections.deque(maxlen=500),
+            'avg_episode_rewards_1': collections.deque(maxlen=500),
             'agent_performance': {},
             'mean_loss': collections.deque(maxlen=500),
         }
@@ -238,20 +221,20 @@ class PPOmultiRewards:
             # add weights to each component of the reward (r0, r1)
             r0 = reward[:, 0] * self.we_reward0
             r1 = reward[:, 1] * self.we_reward1
-            #(f"Reward: {reward}")
-            #print(f"r0: {r0}")
-            #print(f"r1: {r1}")
+            # (f"Reward: {reward}")
+            # print(f"r0: {r0}")
+            # print(f"r1: {r1}")
 
             ep_reward += r0 + r1  # size 2, where first component is the reward of agent 0 and second of agent 1
-            #print(f"Ep_reward: {ep_reward}")
+            # print(f"Ep_reward: {ep_reward}")
 
             # Update separate rewards per agent
             for i in self.r_agents:
                 ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
-                #print(f"Separate rewards per agent: {ep_separate_rewards_per_agent}")
+                # print(f"Separate rewards per agent: {ep_separate_rewards_per_agent}")
 
-            reward = _array_to_dict_tensor(self.r_agents, reward, self.device)
-            #print(f"Reward: {reward}")
+            reward = _array_to_dict_tensor(self.r_agents, [[r0[0], r1[0]], [r0[1], r1[1]]], self.device)
+            # print(f"Reward: {reward}")
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
 
             # save the collected experience into the buffer
@@ -272,7 +255,7 @@ class PPOmultiRewards:
                 ep_reward = np.zeros(len(self.r_agents))
                 for i, r in enumerate(ep_separate_rewards_per_agent):
                     sim_metrics["separate_rewards_per_agent"][i] += r
-                    #print(f"Separate rewards per agent: {sim_metrics['separate_rewards_per_agent']}")
+                    # print(f"Separate rewards per agent: {sim_metrics['separate_rewards_per_agent']}")
                     ep_separate_rewards_per_agent[i] = np.zeros(2)
                 observation = self.environment_reset()
 
@@ -289,7 +272,10 @@ class PPOmultiRewards:
             agent_rewards /= (self.batch_size / self.max_ep_length)
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward_0"] = agent_rewards[0].mean()
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward_1"] = agent_rewards[1].mean()
-        #print(f"run metrics: {self.run_metrics}")
+
+            self.run_metrics["avg_episode_rewards_0"].append(agent_rewards[0].mean())
+            self.run_metrics["avg_episode_rewards_1"].append(agent_rewards[1].mean())
+        # print(f"run metrics: {self.run_metrics}")
         return np.array(
             [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
@@ -350,11 +336,7 @@ class PPOmultiRewards:
         self.logger.debug(f"Shape of 'observations': {batch['observations'].shape}")
 
         # 5. Compute the loss
-        critic_loss = 0.5 * ((predictions - batch['returns']) ** 2).mean(dim=1)  #
-        self.logger.debug(f"Shape of 'critic_loss': {critic_loss.shape}")
-        # 6. Update the critic
-        update_metrics[f"Agent_{k}/Critic Loss_0"] = critic_loss[0].detach()
-        update_metrics[f"Agent_{k}/Critic Loss_1"] = critic_loss[1].detach()
+        critic_loss = nn.MSELoss()(predictions, batch['returns'])
         critic_loss = critic_loss.mean()
         update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
         critic_loss = critic_loss * self.v_coef
@@ -371,8 +353,8 @@ class PPOmultiRewards:
         # 2. Compute updated log probabilities and ratio
         _, _, logprob, entropy = self.agents[k].actor.get_action(batch['observations'],
                                                                  batch['actions'])
-        #entropy_loss = entropy.mean()
-        #update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
+        entropy_loss = entropy.mean()
+        update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
 
         logratio = logprob - batch['log_probs']  # size [num batches, 500]
         self.logger.debug(f"Agent {k} Log Ratio: {logratio}")
@@ -384,9 +366,10 @@ class PPOmultiRewards:
 
         # 3. Compute the advantage
         mb_advantages = batch['advantages']  # Size([2500, 2])
+        # normalize by columns
+        #print(f"Advantages: {mb_advantages.shape}")
         # linearize the advantages reward into a single value
         weighted_advantage = th.sum(mb_advantages, dim=1)  # Size([2500])
-        self.logger.debug(f"Agent {k} Weighted Advantage: {weighted_advantage}")
         # normalize the advantage
         weighted_advantage = normalize(weighted_advantage)
 
@@ -404,8 +387,8 @@ class PPOmultiRewards:
         self.logger.debug(f"Agent {k} actor_loss: {actor_loss}")
         update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
         # mean for each reward (columns) and then mean of the means
-        actor_loss_reduced = -actor_loss
-        #update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
+        actor_loss_reduced = -actor_loss - self.entropy_coef * entropy_loss
+        update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss_reduced.detach()
         self.logger.debug(f"Agent {k} actor_loss_reduced shape: {actor_loss_reduced.shape}")
 
         return actor_loss_reduced
@@ -414,6 +397,8 @@ class PPOmultiRewards:
         # Log relevant data from training
         self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
         self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_episode_rewards'])}")
+        self.logger.info(f"Average reward 0: {np.mean(self.run_metrics['avg_episode_rewards_0'])}")
+        self.logger.info(f"Average reward 1: {np.mean(self.run_metrics['avg_episode_rewards_1'])}")
         self.logger.info(f"Number of episodes: {self.run_metrics['global_episodes']}")
         self.logger.info(f"Number of updates: {self.n_updates}")
         # save the model
@@ -493,3 +478,5 @@ class PPOmultiRewards:
             PPOmultiRewards.callbacks.append(callbacks)
         else:
             raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")
+
+"""
