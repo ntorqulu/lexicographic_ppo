@@ -133,12 +133,10 @@ class LPPO:
         self.mu = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.j = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.recent_losses = [[deque(maxlen=50) for _ in range(self.reward_size)] for _ in self.r_agents]
-        if self.beta_values is not None:
-            self.beta = [self.beta_values for _ in self.r_agents]
-        else:
-            self.beta = [list(reversed(range(1, self.reward_size + 1))) for _ in self.r_agents]
-        self.eta = [[0.1 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
-
+        self.beta = [self.beta_values for _ in self.r_agents]
+        self.eta = [[self.eta_value for _ in range(self.reward_size - 1)] for _ in self.r_agents]
+        print(f"beta: {self.beta}")
+        print(f"eta: {self.eta}")
 
         for k in self.r_agents:
             self.agents[k] = Agent(
@@ -299,17 +297,17 @@ class LPPO:
             # r0 [-1, -2]
             # r1 [0, 0]
             # multiply each component by its weight
-            #print(f"Rewards received: {reward}")
+            print(f"Rewards received: {reward}")
             r0 = reward[:, 0] * self.we_reward0
             r1 = reward[:, 1] * self.we_reward1
-            #print(f"Rewards weighted: {r0}, {r1}")
+            print(f"Rewards weighted: {r0}, {r1}")
             # sum both rewards into the episode reward
             ep_reward += r0 + r1
 
             for i in self.r_agents:
                 ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
 
-            reward = _array_to_dict_tensor(self.r_agents, [[r0[0], r1[0]], [r0[1], r1[1]]], self.device)
+            reward = _array_to_dict_tensor(self.r_agents, [[r0[i], r1[i]] for i in self.r_agents], self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             if not self.eval_mode:
                 for k in self.r_agents:

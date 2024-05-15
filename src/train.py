@@ -2,7 +2,7 @@ import argparse
 import time
 import gym
 from EthicalGatheringGame.wrappers import NormalizeReward
-from EthicalGatheringGame.presets import tiny
+from EthicalGatheringGame.presets import tiny, large, small
 from TrainingParameters import TrainingParameters
 from PPO import PPO
 from LPPO import LPPO
@@ -20,24 +20,26 @@ def parse_args():
         parser.add_argument("--reward_size", type=int, default=1, help="Size of the reward vector")
     else:
         parser.add_argument("--reward_size", type=int, default=2, help="Size of the reward vector")
-    parser.add_argument("--beta_values", nargs='+', type=float, default=None, help="Beta values")
-    parser.add_argument("--eta_values", nargs='+', type=float,  default=None, help="Eta values")
+    parser.add_argument("--beta_values", nargs='+', type=float, default=[2, 1], help="Beta values")
+    parser.add_argument("--eta_value", type=float, default=0.1, help="Eta value")
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     # initialize environment parameters
     args = parse_args()
-    tiny["we"] = [args.we_reward0, args.we_reward1]
+    large["we"] = [args.we_reward0, args.we_reward1]
     if args.reward_size == 1:
-        tiny["reward_mode"] = "scalarised"
+        large["reward_mode"] = "scalarised"
     else:
-        tiny["reward_mode"] = "vectorial"
-    tiny["inequality_mode"] = "loss"
-    tiny["efficiency"] = [0.85, 0.2]
+        large["reward_mode"] = "vectorial"
+    large["inequality_mode"] = "loss"
+    large["efficiency"] = [0.85, 0.85, 0.85, 0.2, 0.2]
+    large["n_agents"] = 5
 
     # Create the environment
-    env = gym.make("MultiAgentEthicalGathering-v1", **tiny)
+    # CHANGE ENVIRONMENT
+    env = gym.make("MultiAgentEthicalGathering-v1", **large)
 
     training_params = TrainingParameters(**vars(args))
     if training_params.execution_class == "PPO":

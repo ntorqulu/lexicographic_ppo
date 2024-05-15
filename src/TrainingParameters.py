@@ -5,11 +5,11 @@ from dataclasses import dataclass
 class TrainingParameters:
     # dataclass attributes created in __init__ and address by self
     env_name: str = "MultiAgentEthicalGathering-v1"  # Name of the environment
-    tag: str = "tiny"  # Tag for the environment
+    tag: str = "large"  # Tag for the environment
     seed: int = 1  # Seed for the environment
     th_deterministic: bool = True  # Whether to use deterministic PyTorch operations
     save_dir: str = "StoreNuria"  # Folder to save the model
-    n_agents: int = 2  # Number of agents in the environment
+    n_agents: int = 5  # Number of agents in the environment
     reward_size: int = 2  # Size of the reward vector
     tot_steps: int = 25000  # Total number of steps
     batch_size: int = 2500  # Batch size
@@ -31,9 +31,8 @@ class TrainingParameters:
     # from multireward
     we_reward0: float = 1
     we_reward1: float = 10
-    execution_class: str = "LexicoPPO"  # Default to lmorlPPO
+    execution_class: str = "LPPO"  # Default to lmorlPPO
     # control param
     eval_mode: bool = False
-    critic_times: int = 1
     beta_values: list = None
-    eta_values: list = None
+    eta_value: float = 0.1
