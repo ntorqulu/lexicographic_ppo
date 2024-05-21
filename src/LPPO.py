@@ -112,7 +112,7 @@ class LPPO:
         # Action-Space
         self.o_size = env.observation_space.sample().shape[0]
         self.a_size = env.action_space.n
-
+        print(f"Performance over safety: {self.prioritize_performance_over_safety}")
         # Attributes
         self.r_agents = range(self.n_agents)
         self.run_metrics = None
@@ -120,6 +120,8 @@ class LPPO:
         self.sim_metrics = {}
         self.folder = None
         self.eval_mode = False
+
+        self.lr_scheduler = None
 
         #   Torch init
         self.device = set_torch(self.n_cpus, self.cuda)
@@ -133,22 +135,20 @@ class LPPO:
         self.mu = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.j = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.recent_losses = [[deque(maxlen=50) for _ in range(self.reward_size)] for _ in self.r_agents]
-        if self.beta_values is not None:
-            self.beta = [self.beta_values for _ in self.r_agents]
-        else:
-            self.beta = [list(reversed(range(1, self.reward_size + 1))) for _ in self.r_agents]
-        self.eta = [[0.1 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
-
+        self.beta = [self.beta_values for _ in self.r_agents]
+        self.eta = [[self.eta_value for _ in range(self.reward_size - 1)] for _ in self.r_agents]
+        print(f"beta: {self.beta}")
+        print(f"eta: {self.eta}")
 
         for k in self.r_agents:
             self.agents[k] = Agent(
-                    SoftmaxActor(self.o_size, self.a_size, self.h_size, self.h_layers).to(self.device),
-                    Critic(self.o_size, self.reward_size, self.h_size, self.h_layers).to(self.device),
-                    self.actor_lr,
-                    self.critic_lr,
+                SoftmaxActor(self.o_size, self.a_size, self.h_size, self.h_layers).to(self.device),
+                Critic(self.o_size, self.reward_size, self.h_size, self.h_layers).to(self.device),
+                self.actor_lr,
+                self.critic_lr,
             )
             self.buffer[k] = Buffer(self.o_size, self.reward_size, self.batch_size, self.max_steps, self.gamma,
-                                        self.gae_lambda, self.device)
+                                    self.gae_lambda, self.device)
 
             self.env = env
 
@@ -206,7 +206,8 @@ class LPPO:
 
                 mb_advantages = b['advantages']  # size [5, 500, 2]
                 # Create the linear combination of normalized advantages
-                first_order_weighted_advantages = first_order_weights[0] * normalize(mb_advantages[:, :, 0]) + first_order_weights[1] * normalize(mb_advantages[:, :, 1])  # [5, 500]
+                first_order_weighted_advantages = first_order_weights[0] * normalize(mb_advantages[:, :, 0]) + \
+                                                  first_order_weights[1] * normalize(mb_advantages[:, :, 1])  # [5, 500]
                 actor_loss = first_order_weighted_advantages * ratio  # [5, 500]
                 update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_loss.mean().detach()
 
@@ -218,11 +219,14 @@ class LPPO:
                 actor_loss = -actor_loss - self.entropy_value * entropy_loss
                 update_metrics[f"Agent_{k}/Actor Loss with Entropy"] = actor_loss.detach()
 
+                # keep track of the recent losses from the first objective
                 for i in range(self.reward_size):
+                    # only compute the loss for the first reward
                     actor_loss_r0 = ratio * normalize(mb_advantages[:, :, i])
                     actor_clip_loss_r0 = normalize(mb_advantages[:, :, i]) * th.clamp(ratio, 1 - self.clip,
-                                                                        1 + self.clip)
+                                                                                      1 + self.clip)
                     actor_loss_r0 = th.min(actor_loss_r0, actor_clip_loss_r0).mean()
+                    # after clipping, the loss is stored in the recent_losses list for evaluation in the lagrange mult
                     self.recent_losses[k][i].append(-actor_loss_r0 - self.entropy_value * entropy_loss)
 
                 self.agents[k].a_optimizer.zero_grad(True)
@@ -237,7 +241,6 @@ class LPPO:
                 critic_loss = nn.MSELoss()(values, returns)
 
                 update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
-                #print(f"Agent_{k}/Critic Loss: {critic_loss.detach()}")
 
                 critic_loss = critic_loss * self.v_coef
 
@@ -247,13 +250,16 @@ class LPPO:
                 self.agents[k].c_optimizer.step()
 
             # Lagrange multipliers
-            for i in range(self.reward_size - 1):
+            for i in range(self.reward_size - 1): # only one iter, 0
+                # only compute the mean of the last 25 losses
                 self.j[k][i] = (-th.tensor(self.recent_losses[k][i])[25:]).mean()
                 # update the lagrange multiplier -> just the mu[k][0] for the first reward is updated
             r = self.reward_size - 1
             for i in range(r):
+                # difference between the last loss and the average of the last 25 losses weighted by the eta value
                 self.mu[k][i] += self.eta[k][i] * (self.j[k][i] - (-self.recent_losses[k][i][-1]))
-                self.mu[k][i] = max(0.0, self.mu[k][i])
+                # only keep it if it has worsened the loss, to give more weight to the first advantage
+                self.mu[k][i] = max(0.0, self.mu[k][i]) # keep in mind we will only use mu[k][0] in the actor
             update_metrics[f"Agent_{k}/Mu_0"] = self.mu[k][0]
 
             loss = actor_loss + critic_loss
@@ -299,17 +305,21 @@ class LPPO:
             # r0 [-1, -2]
             # r1 [0, 0]
             # multiply each component by its weight
-            #print(f"Rewards received: {reward}")
+            # print(f"Rewards received: {reward}")
             r0 = reward[:, 0] * self.we_reward0
             r1 = reward[:, 1] * self.we_reward1
-            #print(f"Rewards weighted: {r0}, {r1}")
+            # print(f"Rewards weighted: {r0}, {r1}")
             # sum both rewards into the episode reward
             ep_reward += r0 + r1
 
             for i in self.r_agents:
                 ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
 
-            reward = _array_to_dict_tensor(self.r_agents, [[r0[0], r1[0]], [r0[1], r1[1]]], self.device)
+            reward = _array_to_dict_tensor(self.r_agents,
+                                           [[r0[i], r1[i]] if self.prioritize_performance_over_safety else [r1[i],
+                                                                                                            r0[i]]
+                                            for i in self.r_agents],
+                                           self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             if not self.eval_mode:
                 for k in self.r_agents:
@@ -321,7 +331,7 @@ class LPPO:
                         s_value[k],
                         done[k]
                     )
-                    #print(f"Reward: {reward[k]}")
+                    # print(f"Reward: {reward[k]}")
 
             observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
 
@@ -405,7 +415,15 @@ class LPPO:
         self.logger.info(f"Reward weights: {self.we_reward0}, {self.we_reward1}")
         self.logger.info(f"Beta values: {self.beta}")
         self.logger.info(f"Eta values: {self.eta}")
+        self.logger.info("-------------------ENT------------------")
+        self.logger.info(f"Anneal entropy: {self.anneal_entropy}")
+        self.logger.info(f"Concavity entropy: {self.concavity_entropy}")
         self.logger.info("-------------------LRS------------------")
+        # Log learning rate scheduler
+        if self.lr_scheduler is not None:
+            self.logger.info(f"Learning rate scheduler: {self.lr_scheduler}")
+        else:
+            self.logger.info("No learning rate scheduler")
         self.logger.info("----------------------------------------")
         self.logger.info(f"Seed: {self.seed}")
 
@@ -417,6 +435,9 @@ class LPPO:
             self.rollout()
 
             self.update()
+
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
         self._finish_training()
 

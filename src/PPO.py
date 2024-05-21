@@ -121,6 +121,8 @@ class PPO:
         self.folder = None
         self.eval_mode = False
 
+        self.lr_scheduler = None
+
         #   Torch init
         self.device = set_torch(self.n_cpus, self.cuda)
 
@@ -212,7 +214,6 @@ class PPO:
                 # get only the first b['returns'], we only have one objective here
                 returns = b['returns'][:, :, 0]
                 critic_loss = 0.5 * ((values - returns) ** 2).mean()
-                print(f"Agent_{k}/Critic Loss Non-Clipped", critic_loss.detach())
 
                 update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
 
@@ -342,7 +343,14 @@ class PPO:
         self.logger.info("-------------------CPV------------------")
         self.logger.info(f"Clip: {self.clip}")
         self.logger.info("-------------------ENT------------------")
+        self.logger.info(f"Anneal entropy: {self.anneal_entropy}")
+        self.logger.info(f"Concavity entropy: {self.concavity_entropy}")
         self.logger.info("-------------------LRS------------------")
+        # Log learning rate scheduler
+        if self.lr_scheduler is not None:
+            self.logger.info(f"Learning rate scheduler: {self.lr_scheduler}")
+        else:
+            self.logger.info("No learning rate scheduler")
         self.logger.info("----------------------------------------")
         self.logger.info(f"Seed: {self.seed}")
 
@@ -354,6 +362,15 @@ class PPO:
             self.rollout()
 
             self.update()
+
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+                print("lr values for agent 0: ", self.agents[0].a_optimizer.param_groups[0]["lr"])
+                print("lr values for critic 0: ", self.agents[0].c_optimizer.param_groups[0]["lr"])
+                print("lr values for agent 1: ", self.agents[1].a_optimizer.param_groups[0]["lr"])
+                print("lr values for critic 1: ", self.agents[1].c_optimizer.param_groups[0]["lr"])
+
+            print("entropy value: ", self.entropy_value)
 
         self._finish_training()
 
