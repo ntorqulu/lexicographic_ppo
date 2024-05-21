@@ -32,6 +32,32 @@ class UpdateCallback(Callback):
         pass
 
 
+class AnnealEntropy(UpdateCallback):
+    def __init__(self, ppo, base_value=1.0, final_value=0.1, concavity=3.5, type="linear_concave"):
+        super().__init__(ppo)
+        self.concavity = concavity
+        self.base_value = base_value
+        self.final_value = final_value
+        self.type = type
+
+    def before_update(self):
+        pass
+
+    def after_update(self):
+        if self.type == "linear_concave":
+            update = self.ppo.run_metrics["global_step"] / self.ppo.batch_size
+            normalized_update = (update - 1.0) / self.ppo.n_updates
+            complementary_update = 1 - normalized_update
+            decay_step = normalized_update ** self.concavity / (
+                    normalized_update ** self.concavity + complementary_update ** self.concavity)
+            frac = (self.base_value - self.final_value) * (1 - decay_step) + self.final_value
+            self.ppo.entropy_value = frac * self.ppo.init_args.ent_coef
+        elif self.type == "linear":
+            update = self.ppo.run_metrics["global_step"] / self.ppo.n_steps
+            frac = 1.0 - (update - 1.0) / self.ppo.n_updates
+            self.ppo.entropy_value = frac * self.ppo.init_args.ent_coef
+
+
 # Printing Wrappers:
 class PrintAverageReward(UpdateCallback):
 
@@ -80,9 +106,9 @@ class TensorBoardLogging(UpdateCallback):
                 # if ppo is LPPO, add avg_episode_rewards_0 and avg_episode_rewards_1
                 if hasattr(self.ppo, "avg_episode_rewards_0"):
                     self.writer.add_scalar("Training/Avg Reward 0", np.array(self.ppo.avg_episode_rewards_0).mean(),
-                                               self.ppo.run_metrics["global_step"])
+                                           self.ppo.run_metrics["global_step"])
                     self.writer.add_scalar("Training/Avg Reward 1", np.array(self.ppo.avg_episode_rewards_1).mean(),
-                                               self.ppo.run_metrics["global_step"])
+                                           self.ppo.run_metrics["global_step"])
                 self.writer.add_scalar("Training/Entropy coef", self.ppo.entropy_value,
                                        self.ppo.run_metrics["global_step"])
                 self.writer.add_scalar("Training/Actor LR", self.ppo.actor_lr, self.ppo.run_metrics["global_step"])

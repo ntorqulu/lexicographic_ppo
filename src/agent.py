@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import torch as th
 
-from ActionSelection import SoftmaxActionSelection
+from ActionSelection import SoftmaxActionSelection, FilterSoftmaxActionSelection
 
 ACTIONS = [0, 1, 2, 3, 4, 5, 6]
 
@@ -51,6 +51,7 @@ def Linear(input_dim, output_dim, act_fn='leaky_relu', init_weight_uniform=True)
 
 
 class SoftmaxActor(nn.Module):
+    eval_action_selection = FilterSoftmaxActionSelection(ACTIONS, threshold=0.1)
     action_selection = SoftmaxActionSelection(ACTIONS)
 
     def __init__(self, o_size: int, a_size: int, h_size: int, h_layers: int, eval=False):
@@ -98,7 +99,7 @@ class SoftmaxActor(nn.Module):
 
     def select_action(self, probs):
         if self.eval_mode:
-            return SoftmaxActor.action_selection.action_selection(probs)
+            return SoftmaxActor.eval_action_selection.action_selection(probs)
         else:
             return SoftmaxActor.action_selection.action_selection(probs)
 
