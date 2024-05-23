@@ -76,7 +76,7 @@ def aggregate_simulation_results(results: list, n_agents: int) -> dict:
     times_not_survived = np.sum(survival_times == -1, axis=0)
     times_not_full = np.sum(donation_full_times == -1)
 
-    return {
+    aggregated_results = {
         "mean_survival_times": np.mean(survival_times, axis=0),
         "std_survival_times": np.std(survival_times, axis=0),
         "times_not_survived": times_not_survived,
@@ -96,6 +96,20 @@ def aggregate_simulation_results(results: list, n_agents: int) -> dict:
         "std_donation_full_time": np.std(donation_full_times),
         "times_not_full": times_not_full
     }
+
+    # Return raw metrics as well for saving to .npz files
+    raw_metrics = {
+        "survival_times": survival_times,
+        "total_rewards": total_rewards,
+        "individual_rewards": individual_rewards,
+        "ethical_rewards": ethical_rewards,
+        "R_missedEthical_counts": R_missedEthical_counts,
+        "R_nonEthical_counts": R_nonEthical_counts,
+        "suboptimal_counts": suboptimal_counts,
+        "donation_full_times": donation_full_times
+    }
+
+    return aggregated_results, raw_metrics
 
 
 def log_simulation_results(results: dict):
@@ -146,7 +160,7 @@ def evaluate_policies_across_seeds(base_directory_path: str, seeds: range, n_sim
     all_results = []
 
     for seed in seeds:
-        directory_path = os.path.join(base_directory_path, f"2500_30000_{seed}")
+        directory_path = os.path.join(base_directory_path, f"2500_50000_{seed}")
         if not os.path.exists(directory_path):
             logger.warning(f"Directory {directory_path} does not exist. Skipping seed {seed}.")
             continue
@@ -160,12 +174,15 @@ def evaluate_policies_across_seeds(base_directory_path: str, seeds: range, n_sim
         logger.info(f"Running simulations for seed {seed}...")
         seed_results = run_simulations(env, agents, n_sims)
         # if you want a display of results for each seed
-        aggregated_results = aggregate_simulation_results(seed_results, len(agents))
+        aggregated_results, raw_metrics = aggregate_simulation_results(seed_results, len(agents))
         log_simulation_results(aggregated_results)
         all_results.extend(seed_results)
+        # Save raw metrics to .npz file
+        save_path = os.path.join(directory_path, f"metrics_{seed}.npz")
+        np.savez(save_path, **raw_metrics)
 
     if all_results:
-        aggregated_results = aggregate_simulation_results(all_results, len(agents))
+        aggregated_results, _ = aggregate_simulation_results(all_results, len(agents))
         log_simulation_results(aggregated_results)
     else:
         logger.error("No valid results to aggregate and log.")
@@ -175,7 +192,7 @@ def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    base_directory_path = "StoreNuria/LPPO/safety"
+    base_directory_path = "StoreNuria/LPPOseed"
     # if you want only to run a seed, specify a range of one number eg range(1, 2)
     seeds = range(1, 21)
     n_sims = 100
