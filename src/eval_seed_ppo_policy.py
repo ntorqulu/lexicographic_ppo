@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import matplotlib
 from EthicalGatheringGame.presets import tiny
-from PPO import PPO
+from LPPO import LPPO
 import matplotlib.pyplot as plt
 
 from eval_policy_visualization import *
@@ -15,7 +15,6 @@ matplotlib.use("TkAgg")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 def run_simulation(env: gym.Env, agents: list) -> dict:
     """
     Run a single simulation with the given environment and agents.
@@ -24,8 +23,6 @@ def run_simulation(env: gym.Env, agents: list) -> dict:
     done = False
 
     total_rewards = np.zeros(len(agents))
-    individual_rewards = np.zeros(len(agents))
-    ethical_rewards = np.zeros(len(agents))
     R_missedEthical_counts = np.zeros(len(agents))
     R_nonEthical_counts = np.zeros(len(agents))
     suboptimal_counts = np.zeros(len(agents))
@@ -34,12 +31,9 @@ def run_simulation(env: gym.Env, agents: list) -> dict:
         actions = [agent.predict(obs[i]) for i, agent in enumerate(agents)]
         obs, rewards, done, info = env.step(actions)
         done = all(done)
-        #print(f"Rewards: {rewards}")
         for i in range(len(agents)):
             # np.dot with weights [1, 10]
-            total_rewards[i] += np.dot(rewards[i], [1, 10])
-            individual_rewards[i] += rewards[i][0]
-            ethical_rewards[i] += rewards[i][1] * 10
+            total_rewards[i] += rewards[i]
             R_missedEthical_counts[i] += info["R'_E"][i]
             R_nonEthical_counts[i] += info["R'_N"][i]
 
@@ -52,8 +46,6 @@ def run_simulation(env: gym.Env, agents: list) -> dict:
     sim_data = info["sim_data"]
     return {
         "total_rewards": total_rewards,
-        "individual_rewards": individual_rewards,
-        "ethical_rewards": ethical_rewards,
         "R_missedEthical_counts": R_missedEthical_counts,
         "R_nonEthical_counts": R_nonEthical_counts,
         "suboptimal_counts": suboptimal_counts,
@@ -68,8 +60,6 @@ def aggregate_simulation_results(results: list, n_agents: int) -> dict:
     """
     survival_times = np.array([result["time_to_survival"] for result in results])
     total_rewards = np.array([result["total_rewards"] for result in results])
-    individual_rewards = np.array([result["individual_rewards"] for result in results])
-    ethical_rewards = np.array([result["ethical_rewards"] for result in results])
     R_missedEthical_counts = np.array([result["R_missedEthical_counts"] for result in results])
     R_nonEthical_counts = np.array([result["R_nonEthical_counts"] for result in results])
     suboptimal_counts = np.array([result["suboptimal_counts"] for result in results])
@@ -78,16 +68,12 @@ def aggregate_simulation_results(results: list, n_agents: int) -> dict:
     times_not_survived = np.sum(survival_times == -1, axis=0)
     times_not_full = np.sum(donation_full_times == -1)
 
-    return {
+    aggregated_results = {
         "mean_survival_times": np.mean(survival_times, axis=0),
         "std_survival_times": np.std(survival_times, axis=0),
         "times_not_survived": times_not_survived,
         "mean_total_rewards": np.mean(total_rewards, axis=0),
         "std_total_rewards": np.std(total_rewards, axis=0),
-        "mean_individual_rewards": np.mean(individual_rewards, axis=0),
-        "std_individual_rewards": np.std(individual_rewards, axis=0),
-        "mean_ethical_rewards": np.mean(ethical_rewards, axis=0),
-        "std_ethical_rewards": np.std(ethical_rewards, axis=0),
         "mean_R_E_counts": np.mean(R_missedEthical_counts, axis=0),
         "std_R_E_counts": np.std(R_missedEthical_counts, axis=0),
         "mean_R_N_counts": np.mean(R_nonEthical_counts, axis=0),
@@ -98,6 +84,18 @@ def aggregate_simulation_results(results: list, n_agents: int) -> dict:
         "std_donation_full_time": np.std(donation_full_times),
         "times_not_full": times_not_full
     }
+
+    # Return raw metrics as well for saving to .npz files
+    raw_metrics = {
+        "survival_times": survival_times,
+        "total_rewards": total_rewards,
+        "R_missedEthical_counts": R_missedEthical_counts,
+        "R_nonEthical_counts": R_nonEthical_counts,
+        "suboptimal_counts": suboptimal_counts,
+        "donation_full_times": donation_full_times
+    }
+
+    return aggregated_results, raw_metrics
 
 
 def log_simulation_results(results: dict):
@@ -113,12 +111,6 @@ def log_simulation_results(results: dict):
     for i, (mean, std) in enumerate(zip(results["mean_total_rewards"], results["std_total_rewards"])):
         logger.info(f"Agent {i} - Mean Total Reward: {mean:.2f}, Std: {std:.2f}")
 
-    for i, (mean, std) in enumerate(zip(results["mean_individual_rewards"], results["std_individual_rewards"])):
-        logger.info(f"Agent {i} - Mean Individual Reward: {mean:.2f}, Std: {std:.2f}")
-
-    for i, (mean, std) in enumerate(zip(results["mean_ethical_rewards"], results["std_ethical_rewards"])):
-        logger.info(f"Agent {i} - Mean Ethical Reward: {mean:.2f}, Std: {std:.2f}")
-
     logger.info(
         f"Donation Box - Mean Time to Full: {results['mean_donation_full_time']:.2f}, Std: {results['std_donation_full_time']:.2f}")
     logger.info(f"Donation Box - Times not Full: {results['times_not_full']}")
@@ -133,73 +125,58 @@ def log_simulation_results(results: dict):
         logger.info(f"Agent {i} - Mean Suboptimal Actions: {mean:.2f}, Std: {std:.2f}")
 
 
-def plot_single_result(metric_name, agent_ids, means, stds, ylabel):
-    """
-    Plot a single result metric with error bars.
-    """
-    plt.figure(figsize=(8, 6))
-    plt.bar(agent_ids, means, yerr=stds, capsize=5)
-    plt.title(f"Mean {metric_name}")
-    plt.ylabel(ylabel)
-    plt.show()
-
-
-def plot_simulation_results(results: dict):
-    """
-    Plot the aggregated results of the simulations.
-    """
-    n_agents = len(results["mean_survival_times"])
-    agent_ids = [f"Agent {i}" for i in range(n_agents)]
-
-    plot_single_result("Total Rewards", agent_ids, results["mean_total_rewards"], results["std_total_rewards"], "Reward")
-    plot_single_result("Individual Rewards", agent_ids, results["mean_individual_rewards"], results["std_individual_rewards"],
-                       "Reward")
-    plot_single_result("Ehical Rewards", agent_ids, results["mean_ethical_rewards"], results["std_ethical_rewards"],
-                       "Reward")
-    plot_single_result("Time to Survival", agent_ids, results["mean_survival_times"], results["std_survival_times"], "Time")
-    plot_single_result("R'_E Actions", agent_ids, results["mean_R_E_counts"], results["std_R_E_counts"], "Count")
-    plot_single_result("R'_N Actions", agent_ids, results["mean_R_N_counts"], results["std_R_N_counts"], "Count")
-    plot_single_result("Suboptimal Actions", agent_ids, results["mean_suboptimal_counts"], results["std_suboptimal_counts"], "Count")
-
-    plt.figure(figsize=(8, 6))
-    plt.bar(["Donation Box"], [results["mean_donation_full_time"]], yerr=[results["std_donation_full_time"]], capsize=5)
-    plt.title("Donation Box - Mean Time to Full")
-    plt.ylabel("Time")
-    plt.show()
-
-
 def run_simulations(env: gym.Env, agents: list, n_sims: int = 100):
     """
     Run multiple simulations and aggregate the results.
     """
-    env.toggleTrack(True)
-    env.toggleStash(True)
-
     results = []
     for _ in range(n_sims):
         result = run_simulation(env, agents)
         results.append(result)
+    return results
 
-    aggregated_results = aggregate_simulation_results(results, len(agents))
-    log_simulation_results(aggregated_results)
-    plot_simulation_results(aggregated_results)
-    env.plot_results("median")
-    env.print_results()
+
+def evaluate_policies_across_seeds(base_directory_path: str, seeds: range, n_sims: int):
+    all_results = []
+
+    for seed in seeds:
+        directory_path = os.path.join(base_directory_path, f"2500_50000_{seed}_(1)")
+        if not os.path.exists(directory_path):
+            logger.warning(f"Directory {directory_path} does not exist. Skipping seed {seed}.")
+            continue
+
+        logger.info(f"Configuring environment for seed {seed}...")
+        env = configure_environment("scalarised")
+
+        logger.info(f"Loading trained agents for seed {seed}...")
+        agents = load_agents(directory_path, "PPO")
+
+        logger.info(f"Running simulations for seed {seed}...")
+        seed_results = run_simulations(env, agents, n_sims)
+        # if you want a display of results for each seed
+        aggregated_results, raw_metrics = aggregate_simulation_results(seed_results, len(agents))
+        log_simulation_results(aggregated_results)
+        all_results.extend(seed_results)
+        # Save raw metrics to .npz file
+        save_path = os.path.join(directory_path, f"metrics_{seed}.npz")
+        np.savez(save_path, **raw_metrics)
+
+    if all_results:
+        aggregated_results, _ = aggregate_simulation_results(all_results, len(agents))
+        log_simulation_results(aggregated_results)
+    else:
+        logger.error("No valid results to aggregate and log.")
 
 
 def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    directory_path = "StoreNuria/large/2500_30000_1"
-    logger.info("Configuring environment...")
-    env = configure_environment("vectorial")
-
-    logger.info("Loading trained agents...")
-    agents = load_agents(directory_path, "LPPO")
-
-    logger.info("Running simulations...")
-    run_simulations(env, agents, n_sims=100)
+    base_directory_path = "StoreNuria/PPOseed"
+    # if you want only to run a seed, specify a range of one number eg range(1, 2)
+    seeds = range(1, 21)
+    n_sims = 100
+    evaluate_policies_across_seeds(base_directory_path, seeds, n_sims)
 
 
 if __name__ == "__main__":
