@@ -77,7 +77,7 @@ def run_simulations(env: gym.Env, agents: list, n_sims: int = 1000):
             actions = [agent.predict(obs[i]) for i, agent in enumerate(agents)]
             obs, rewards, done, info = env.step(actions)
             done = all(done)
-            env.render()
+            #env.render()
     env.plot_results("median")
     env.print_results()
 
@@ -88,7 +88,7 @@ def main():
     """
     # StoreNuria/policy/tiny/2500_30000_1_(61) for PPO
     # StoreNuria/policy/tiny/modifications/2500_30000_1_(72) for LPPO
-    directory_path = "StoreNuria/large/2500_30000_1"
+    directory_path = "StoreNuria/LPPOsafetySeed/2500_50000_1"
     execution_class = "LPPO"  # "PPO" or "LPPO"
     reward_mode = "vectorial" if execution_class == "LPPO" else "scalarised"
 
