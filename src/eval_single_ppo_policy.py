@@ -176,7 +176,7 @@ def main():
     agents = load_agents(directory_path, "PPO")
 
     logger.info("Running simulations...")
-    run_simulations(env, agents, n_sims=100)
+    run_simulations(env, agents, n_sims=1000)
 
 
 if __name__ == "__main__":

@@ -191,7 +191,7 @@ def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    directory_path = "StoreNuria/large/2500_30000_1"
+    directory_path = "StoreNuria/LPPOsafetySeed/2500_50000_1"
     logger.info("Configuring environment...")
     env = configure_environment("vectorial")
 
@@ -199,7 +199,7 @@ def main():
     agents = load_agents(directory_path, "LPPO")
 
     logger.info("Running simulations...")
-    run_simulations(env, agents, n_sims=100)
+    run_simulations(env, agents, n_sims=1000)
 
 
 if __name__ == "__main__":

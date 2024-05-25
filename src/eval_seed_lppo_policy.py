@@ -192,7 +192,7 @@ def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    base_directory_path = "StoreNuria/LPPOseed"
+    base_directory_path = "StoreNuria/LPPOsecondSafetySeed"
     # if you want only to run a seed, specify a range of one number eg range(1, 2)
     seeds = range(1, 21)
     n_sims = 100
