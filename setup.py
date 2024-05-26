@@ -3,9 +3,9 @@ from setuptools import setup, find_packages
 setup(
     name='lexicographic_ppo',
     version='0.1.0',
-    description='Lexicographic Proximal Policy Optimization for multi-objective reinforcement learning',
-    author='Your Name',
-    author_email='your.email@example.com',
+    description='Lexicographic Proximal Policy Optimization for Ethical Multi-Agent Learning',
+    author='ntorqulu',
+    author_email='ntorqulu11@alumnes.ub.edu',
     url='https://github.com/ntorqulu/lexicographic_ppo.git',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
