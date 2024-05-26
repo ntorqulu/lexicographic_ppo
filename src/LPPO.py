@@ -1,4 +1,3 @@
-import argparse
 import copy
 import json
 import logging
@@ -21,6 +20,18 @@ warnings.simplefilter(action='ignore', category=DeprecationWarning)
 
 
 def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, astype: Type = th.float32) -> Dict:
+    """
+    Convert an array of data into a dictionary of tensors, with tensors moved to the specified device.
+
+    Args:
+        agents (List[int]): List of agent indices.
+        data (np.ndarray): Array of data to convert.
+        device (th.device): Device to move the tensors to.
+        astype (Type): Data type of the tensors.
+
+    Returns:
+        Dict: Dictionary of tensors.
+    """
     # Check if the provided device is already the current device
     is_same_device = (device == th.cuda.current_device()) if device.type == 'cuda' else (device == th.device('cpu'))
 
@@ -36,9 +47,15 @@ class LPPO:
     @staticmethod
     def actors_from_file(folder, dev='cpu', eval=True):
         """
-        Creates the actors from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
+        Load actors from files in the specified folder and set them to evaluation mode.
+
+        Args:
+            folder (str): Folder containing the saved models.
+            dev (str): Device to load the models onto.
+            eval (bool): Whether to set the models to evaluation mode.
+
+        Returns:
+            List[SoftmaxActor]: List of loaded actor models.
         """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
@@ -58,9 +75,15 @@ class LPPO:
     @staticmethod
     def agents_from_file(folder, dev='cpu', eval=True):
         """
-        Creates the agents from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
+        Load agents from files in the specified folder and set them to evaluation mode.
+
+        Args:
+            folder (str): Folder containing the saved models.
+            dev (str): Device to load the models onto.
+            eval (bool): Whether to set the models to evaluation mode.
+
+        Returns:
+            List[Agent]: List of loaded agents.
         """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
@@ -81,24 +104,33 @@ class LPPO:
             return agents
 
     def __init__(self, args, env, run_name=None):
+        """
+        Initialize the LPPO instance.
 
+        Args:
+            args (Namespace or dict): Arguments for the LPPO configuration.
+            env (gym.Env): Environment to interact with.
+            run_name (str, optional): Name for the training run.
+        """
         # Logging
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.ERROR)
+        self.logger.setLevel(logging.INFO)
         # Check if the logger already has a handler
-        if len(self.logger.handlers) == 0:
+        if not self.logger.hasHandlers():
             ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)
+            ch.setLevel(logging.INFO)  # Set handler level to INFO
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             ch.setFormatter(formatter)
             self.logger.addHandler(ch)
 
+        # Convert args to Namespace if needed
         if type(args) is dict:
             args = argparse.Namespace(**args)
         elif type(args) is argparse.Namespace:
             args = args
         self.init_args = args
 
+        # Set attributes from args
         for k, v in self.init_args.__dict__.items():
             setattr(self, k, v)
         self.entropy_value = self.ent_coef
@@ -109,11 +141,11 @@ class LPPO:
             timestamp = time.strftime("%m-%d_%H-%M", time.localtime())
             self.run_name = f"{self.env_name}__{self.tag}__{self.seed}__{timestamp}__{np.random.randint(0, 100)}"
 
-        # Action-Space
+        # Action-Space setup
         self.o_size = env.observation_space.sample().shape[0]
         self.a_size = env.action_space.n
-        print(f"Performance over safety: {self.prioritize_performance_over_safety}")
-        # Attributes
+
+        # Additional attributes
         self.r_agents = range(self.n_agents)
         self.run_metrics = None
         self.update_metrics = {}
@@ -123,15 +155,15 @@ class LPPO:
 
         self.lr_scheduler = None
 
-        #   Torch init
+        # Torch initialization
         self.device = set_torch(self.n_cpus, self.cuda)
 
-        #   Actor-Critic
+        # Actor-Critic setup
         self.n_updates = None
         self.buffer = None
         self.agents, self.buffer = {}, {}
 
-        #   Lexico params
+        # Lexico params initialization
         self.mu = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.j = [[0.0 for _ in range(self.reward_size - 1)] for _ in self.r_agents]
         self.recent_losses = [[deque(maxlen=50) for _ in range(self.reward_size)] for _ in self.r_agents]
@@ -153,6 +185,15 @@ class LPPO:
             self.env = env
 
     def environment_reset(self, env=None):
+        """
+        Reset the environment and return the initial observation.
+
+        Args:
+            env (gym.Env, optional): Environment to reset. If None, use the LPPO instance's environment.
+
+        Returns:
+            Dict: Initial observation from the environment.
+        """
         if env is None:
             non_tensor_observation, info = self.env.reset()
             observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
@@ -163,7 +204,13 @@ class LPPO:
             return observation
 
     def update(self):
-        # Run callbacks
+        """
+        Update the policy and value networks based on the collected experience.
+
+        Returns:
+            Dict: Update metrics.
+        """
+        # Run callbacks before update
         for c in LPPO.callbacks:
             if issubclass(type(c), UpdateCallback):
                 c.before_update()
@@ -269,7 +316,7 @@ class LPPO:
                               self.r_agents]).mean()
         self.run_metrics["mean_loss"].append(mean_loss)
 
-        # Run callbacks
+        # Run callbacks after update
         for c in LPPO.callbacks:
             if issubclass(type(c), UpdateCallback):
                 c.after_update()
@@ -277,6 +324,12 @@ class LPPO:
         return update_metrics
 
     def rollout(self):
+        """
+        Collect experience by interacting with the environment.
+
+        Returns:
+            np.ndarray: Array of agent performance metrics.
+        """
         sim_metrics = {"reward_per_agent": np.zeros(len(self.r_agents)),
                        "separate_rewards_per_agent": [np.zeros(2) for _ in range(len(self.r_agents))]}
 
@@ -298,27 +351,23 @@ class LPPO:
                         _,
                     ) = self.agents[k].actor.get_action(observation[k])
                     if not self.eval_mode:
-                        s_value[k] = self.agents[k].critic(observation[k])  # size [a,b]
-            # TODO: Change action -> env_action mapping
+                        s_value[k] = self.agents[k].critic(observation[k])
             non_tensor_observation, reward, done, info = self.env.step(env_action)
             # reward shape (2,)
-            # r0 [-1, -2]
-            # r1 [0, 0]
+            # r0 [a, b]
+            # r1 [c, d]
             # multiply each component by its weight
-            # print(f"Rewards received: {reward}")
             r0 = reward[:, 0] * self.we_reward0
             r1 = reward[:, 1] * self.we_reward1
-            # print(f"Rewards weighted: {r0}, {r1}")
             # sum both rewards into the episode reward
             ep_reward += r0 + r1
 
             for i in self.r_agents:
                 ep_separate_rewards_per_agent[i] += np.array([r0[i], r1[i]])
 
+            # if safety is prioritized, swap the order of the rewards to put it first
             reward = _array_to_dict_tensor(self.r_agents,
-                                           [[r0[i], r1[i]] if self.prioritize_performance_over_safety else [r1[i],
-                                                                                                            r0[i]]
-                                            for i in self.r_agents],
+                                           [[r0[i], r1[i]] if self.prioritize_performance_over_safety else [r1[i], r0[i]] for i in self.r_agents],
                                            self.device)
             done = _array_to_dict_tensor(self.r_agents, done, self.device)
             if not self.eval_mode:
@@ -331,7 +380,6 @@ class LPPO:
                         s_value[k],
                         done[k]
                     )
-                    # print(f"Reward: {reward[k]}")
 
             observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
 
@@ -363,8 +411,14 @@ class LPPO:
             [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
     def train(self, reset=True, set_agents=None):
+        """
+        Train the LPPO agent.
+
+        Args:
+            reset (bool): Whether to reset the agent parameters.
+            set_agents (dict, optional): Predefined set of agents.
+        """
         self.environment_setup()
-        # set seed for training
         set_seeds(self.seed, self.th_deterministic)
 
         if reset:
@@ -419,6 +473,7 @@ class LPPO:
         self.logger.info(f"Anneal entropy: {self.anneal_entropy}")
         self.logger.info(f"Concavity entropy: {self.concavity_entropy}")
         self.logger.info("-------------------LRS------------------")
+        self.logger.info(f"Prioritize performance over safety: {self.prioritize_performance_over_safety}")
         # Log learning rate scheduler
         if self.lr_scheduler is not None:
             self.logger.info(f"Learning rate scheduler: {self.lr_scheduler}")
@@ -442,6 +497,9 @@ class LPPO:
         self._finish_training()
 
     def environment_setup(self):
+        """
+        Set up the environment and check for compatibility with the LPPO configuration.
+        """
         if self.env is None:
             raise Exception("Environment not set")
         obs, info = self.env.reset()
@@ -462,7 +520,9 @@ class LPPO:
         # TODO: Set the action space, translate actions to env_actions
 
     def _finish_training(self):
-        # Log relevant data from training
+        """
+        Finish the training process and log relevant data.
+        """
         self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
         self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_reward'])}")
         self.logger.info(f"Average reward 0: {np.mean(self.run_metrics['avg_episode_rewards_0'])}")
@@ -475,6 +535,16 @@ class LPPO:
         self.save_experiment_data()
 
     def save_experiment_data(self, folder=None, ckpt=False):
+        """
+        Save experiment data including model and configuration.
+
+        Args:
+            folder (str, optional): Folder to save the experiment data.
+            ckpt (bool): Whether to save a checkpoint.
+
+        Returns:
+            str: Path to the saved folder.
+        """
         config = self.init_args
         # Create new folder in to save the model using tag, batch_size, tot_steps and seed as name
         if folder is None:
@@ -535,6 +605,12 @@ class LPPO:
         return folder
 
     def addCallbacks(self, callbacks):
+        """
+        Add callbacks to the LPPO instance.
+
+        Args:
+            callbacks (list or Callback): Callbacks to add.
+        """
         if isinstance(callbacks, list):
             for c in callbacks:
                 if not issubclass(type(c), Callback):
@@ -550,6 +626,12 @@ class LPPO:
             raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")
 
     def load_checkpoint(self, folder):
+        """
+        Load a checkpoint from the specified folder.
+
+        Args:
+            folder (str): Folder containing the saved checkpoint.
+        """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))

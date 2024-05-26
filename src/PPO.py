@@ -1,4 +1,3 @@
-import argparse
 import copy
 import json
 import logging
@@ -7,6 +6,7 @@ import time
 import warnings
 
 from collections import deque
+
 from agent import SoftmaxActor, Critic, Agent
 
 from utils.memory import Buffer
@@ -21,6 +21,18 @@ warnings.simplefilter(action='ignore', category=DeprecationWarning)
 
 
 def _array_to_dict_tensor(agents: List[int], data: Array, device: th.device, astype: Type = th.float32) -> Dict:
+    """
+    Convert an array of data into a dictionary of tensors, with tensors moved to the specified device.
+
+    Args:
+        agents (List[int]): List of agent indices.
+        data (np.ndarray): Array of data to convert.
+        device (th.device): Device to move the tensors to.
+        astype (Type): Data type of the tensors.
+
+    Returns:
+        Dict: Dictionary of tensors.
+    """
     # Check if the provided device is already the current device
     is_same_device = (device == th.cuda.current_device()) if device.type == 'cuda' else (device == th.device('cpu'))
 
@@ -36,9 +48,15 @@ class PPO:
     @staticmethod
     def actors_from_file(folder, dev='cpu', eval=True):
         """
-        Creates the actors from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
+        Load actors from files in the specified folder.
+
+        Args:
+            folder (str): Folder containing the saved models.
+            dev (str): Device to load the models onto.
+            eval (bool): Whether to set the models to evaluation mode.
+
+        Returns:
+            List[SoftmaxActor]: List of loaded actor models.
         """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
@@ -58,9 +76,15 @@ class PPO:
     @staticmethod
     def agents_from_file(folder, dev='cpu', eval=True):
         """
-        Creates the agents from the folder's model, and returns them set to eval mode.
-        It is assumed that the model is a SoftmaxActor from file agent.py which only has hidden layers and an output layer.
-        :return:
+        Load agents from files in the specified folder.
+
+        Args:
+            folder (str): Folder containing the saved models.
+            dev (str): Device to load the models onto.
+            eval (bool): Whether to set the models to evaluation mode.
+
+        Returns:
+            List[Agent]: List of loaded agents.
         """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
@@ -81,7 +105,14 @@ class PPO:
             return agents
 
     def __init__(self, args, env, run_name=None):
+        """
+        Initialize the PPO instance.
 
+        Args:
+            args (Namespace or dict): Arguments for the PPO configuration.
+            env (gym.Env): Environment to interact with.
+            run_name (str, optional): Name for the training run.
+        """
         # Logging
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.ERROR)
@@ -105,7 +136,6 @@ class PPO:
         if run_name is not None:
             self.run_name = run_name
         else:
-            # Get and format day and time
             timestamp = time.strftime("%m-%d_%H-%M", time.localtime())
             self.run_name = f"{self.env_name}__{self.tag}__{self.seed}__{timestamp}__{np.random.randint(0, 100)}"
 
@@ -123,10 +153,10 @@ class PPO:
 
         self.lr_scheduler = None
 
-        #   Torch init
+        # Torch initialization
         self.device = set_torch(self.n_cpus, self.cuda)
 
-        #   Actor-Critic
+        # Actor-Critic initialization
         self.n_updates = None
         self.buffer = None
         self.agents, self.buffer = {}, {}
@@ -144,6 +174,15 @@ class PPO:
         self.env = env
 
     def environment_reset(self, env=None):
+        """
+        Reset the environment and return the initial observation.
+
+        Args:
+            env (gym.Env, optional): Environment to reset. If None, use the PPO instance's environment.
+
+        Returns:
+            Dict: Initial observation from the environment.
+        """
         if env is None:
             non_tensor_observation, info = self.env.reset()
             observation = _array_to_dict_tensor(self.r_agents, non_tensor_observation, self.device)
@@ -154,6 +193,12 @@ class PPO:
             return observation
 
     def update(self):
+        """
+        Update the policy and value networks based on the collected experience.
+
+        Returns:
+            Dict: Update metrics.
+        """
         # Run callbacks
         for c in PPO.callbacks:
             if issubclass(type(c), UpdateCallback):
@@ -176,25 +221,20 @@ class PPO:
             # Actor optimization
             for epoch in range(self.n_epochs):
                 _, _, logprob, entropy = self.agents[k].actor.get_action(b['observations'], b['actions'])
-                # logprob and entropy have shape [5, 500].
-                # 5 is the number of collected trajectories, and 500 the number of steps
-                entropy_loss = entropy.mean()  # mean of all elements in the tensor. sum (all the values) / (5*500 elem)
-                # entropy is now a scalar
+                entropy_loss = entropy.mean()
                 update_metrics[f"Agent_{k}/Entropy"] = entropy_loss.detach()
 
-                logratio = logprob - b['logprobs']  # still size [5, 500]
-                ratio = logratio.exp()  # still size [5, 500]
-                update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()  # mean of all the values in the tensor
+                logratio = logprob - b['logprobs']
+                ratio = logratio.exp()
+                update_metrics[f"Agent_{k}/Ratio"] = ratio.mean().detach()
 
-                mb_advantages = b['advantages']  # size [5, 500, 1]
-                # separate the advantages into [5, 500] tensors and normalize them
-                mb_advantages = normalize(mb_advantages[:, :, 0]) # we only have one here
+                mb_advantages = b['advantages']
+                mb_advantages = normalize(mb_advantages[:, :, 0])
 
-                actor_loss = mb_advantages * ratio # [5, 500]
+                actor_loss = mb_advantages * ratio
                 update_metrics[f"Agent_{k}/Actor Loss Non-Clipped"] = actor_loss.mean().detach()
 
                 actor_clip_loss = mb_advantages * th.clamp(ratio, 1 - self.clip, 1 + self.clip)
-                # Calculate clip fraction
                 actor_loss = th.min(actor_loss, actor_clip_loss).mean()
                 update_metrics[f"Agent_{k}/Actor Loss"] = actor_loss.detach()
 
@@ -208,13 +248,9 @@ class PPO:
 
             # Critic optimization
             for epoch in range(self.n_epochs * self.critic_times):
-                values = self.agents[k].critic(b['observations']).squeeze() # size [5, 500]
-                # and b['returns'] size [5, 500, 1]
-                # No value clipping
-                # get only the first b['returns'], we only have one objective here
+                values = self.agents[k].critic(b['observations']).squeeze()
                 returns = b['returns'][:, :, 0]
                 critic_loss = 0.5 * ((values - returns) ** 2).mean()
-
                 update_metrics[f"Agent_{k}/Critic Loss"] = critic_loss.detach()
 
                 critic_loss = critic_loss * self.v_coef
@@ -226,13 +262,12 @@ class PPO:
 
             loss = actor_loss - entropy_loss * self.entropy_value + critic_loss
             update_metrics[f"Agent_{k}/Loss"] = loss.detach().cpu()
-            self.logger.debug(f"end epoch")
+
         self.update_metrics = update_metrics
-        mean_loss = np.array([self.update_metrics[f"Agent_{k}/Loss"] for k in
-                              self.r_agents]).mean()
+        mean_loss = np.array([self.update_metrics[f"Agent_{k}/Loss"] for k in self.r_agents]).mean()
         self.run_metrics["mean_loss"].append(mean_loss)
 
-        # Run callbacks
+        # Run callbacks after update
         for c in PPO.callbacks:
             if issubclass(type(c), UpdateCallback):
                 c.after_update()
@@ -240,6 +275,12 @@ class PPO:
         return update_metrics
 
     def rollout(self):
+        """
+        Collect experience by interacting with the environment.
+
+        Returns:
+            np.ndarray: Array of agent performance metrics.
+        """
         sim_metrics = {"reward_per_agent": np.zeros(self.n_agents)}
 
         observation = self.environment_reset()
@@ -252,15 +293,10 @@ class PPO:
 
             with th.no_grad():
                 for k in self.r_agents:
-                    (
-                        env_action[k],
-                        action[k],
-                        logprob[k],
-                        _,
-                    ) = self.agents[k].actor.get_action(observation[k])
+                    env_action[k], action[k], logprob[k], _,  = self.agents[k].actor.get_action(observation[k])
                     if not self.eval_mode:
                         s_value[k] = self.agents[k].critic(observation[k])
-            # TODO: Change action -> env_action mapping
+
             non_tensor_observation, reward, done, info = self.env.step(env_action)
             ep_reward += reward
 
@@ -289,15 +325,20 @@ class PPO:
         sim_metrics["reward_per_agent"] /= (self.batch_size / self.max_steps)
 
         self.run_metrics["avg_reward"].append(sim_metrics["reward_per_agent"].mean())
-        # Save mean reward per agent
         for k in self.r_agents:
             self.run_metrics["agent_performance"][f"Agent_{k}/Reward"] = sim_metrics["reward_per_agent"][k].mean()
         return np.array(
             [self.run_metrics["agent_performance"][f"Agent_{self.r_agents[k]}/Reward"] for k in self.r_agents])
 
     def train(self, reset=True, set_agents=None):
+        """
+        Train the PPO agent.
+
+        Args:
+            reset (bool): Whether to reset the agent parameters.
+            set_agents (dict, optional): Predefined set of agents.
+        """
         self.environment_setup()
-        # set seed for training
         set_seeds(self.seed, self.th_deterministic)
 
         if reset:
@@ -375,6 +416,9 @@ class PPO:
         self._finish_training()
 
     def environment_setup(self):
+        """
+        Set up the environment and check for compatibility with the PPO configuration.
+        """
         if self.env is None:
             raise Exception("Environment not set")
         obs, info = self.env.reset()
@@ -392,9 +436,11 @@ class PPO:
 
         self.o_size = self.env.observation_space.sample().shape[0]
         self.a_size = self.env.action_space.n
-        # TODO: Set the action space, translate actions to env_actions
 
     def _finish_training(self):
+        """
+        Finish the training process and log relevant data.
+        """
         # Log relevant data from training
         self.logger.info(f"Training finished in {time.time() - self.run_metrics['start_time']} seconds")
         self.logger.info(f"Average reward: {np.mean(self.run_metrics['avg_reward'])}")
@@ -406,6 +452,16 @@ class PPO:
         self.save_experiment_data()
 
     def save_experiment_data(self, folder=None, ckpt=False):
+        """
+        Save experiment data including model and configuration.
+
+        Args:
+            folder (str, optional): Folder to save the experiment data.
+            ckpt (bool): Whether to save a checkpoint.
+
+        Returns:
+            str: Path to the saved folder.
+        """
         config = self.init_args
         # Create new folder in to save the model using tag, batch_size, tot_steps and seed as name
         if folder is None:
@@ -466,6 +522,12 @@ class PPO:
         return folder
 
     def addCallbacks(self, callbacks):
+        """
+        Add callbacks to the PPO instance.
+
+        Args:
+            callbacks (list or Callback): Callbacks to add.
+        """
         if isinstance(callbacks, list):
             for c in callbacks:
                 if not issubclass(type(c), Callback):
@@ -481,6 +543,12 @@ class PPO:
             raise TypeError("Callbacks must be a Callback subclass or a list of Callback subclasses")
 
     def load_checkpoint(self, folder):
+        """
+        Load a checkpoint from the specified folder.
+
+        Args:
+            folder (str): Folder containing the saved checkpoint.
+        """
         # Load the args from the folder
         with open(folder + "/config.json", "r") as f:
             args = argparse.Namespace(**json.load(f))

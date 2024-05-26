@@ -1,13 +1,8 @@
-import os
-import gym
-import logging
 import numpy as np
-import matplotlib
 import pandas as pd
 import seaborn as sns
-from EthicalGatheringGame.presets import tiny
-from LPPO import LPPO
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
+
 from eval_policy_visualization import *
 
 matplotlib.use("TkAgg")
@@ -66,11 +61,25 @@ def plot_rewards(reward_data: pd.DataFrame):
     plt.title("Reward per agent")
     plt.show()
 
+def parse_args():
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate trained policies.")
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed",
+                        help="Directory path for saving models.")
+    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    return parser.parse_args()
+
 
 def main():
-    base_directory_path = "StoreNuria/LPPOseed"
+    args = parse_args()
+    base_directory_path = args.directory_path
     seeds = range(1, 21)
-    n_sims = 100
+    n_sims = args.n_sims
 
     reward_data = collect_rewards_across_seeds(base_directory_path, seeds, n_sims)
     plot_rewards(reward_data)

@@ -40,8 +40,8 @@ class TrainingParameters:
     execution_class: str = "LPPO"  # Execution class, default to LPPO
     # control param
     eval_mode: bool = False  # Whether to run in evaluation mode
-    beta_values: Optional[List[float]] = field(default_factory=lambda: [2, 1])  # Beta values for optimization
-    eta_value: float = 0.1  # Eta value for optimization
+    beta_values: Optional[List[float]] = field(default_factory=lambda: [1, 0.5])  # Beta values for safety
+    eta_value: float = 2.5  # Eta value for safety
     prioritize_performance_over_safety: bool = False  # Whether to prioritize performance over safety
 
     def __post_init__(self):

@@ -1,11 +1,4 @@
-import os
-import gym
-import logging
 import numpy as np
-import matplotlib
-from EthicalGatheringGame.presets import tiny
-from LPPO import LPPO
-import matplotlib.pyplot as plt
 
 from eval_policy_visualization import *
 
@@ -14,6 +7,7 @@ matplotlib.use("TkAgg")
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 def run_simulation(env: gym.Env, agents: list) -> dict:
     """
@@ -188,14 +182,44 @@ def evaluate_policies_across_seeds(base_directory_path: str, seeds: range, n_sim
         logger.error("No valid results to aggregate and log.")
 
 
+def parse_args():
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate trained policies.")
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed",
+                        help="Directory path for saving models.")
+    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    return parser.parse_args()
+
+
+def parse_args():
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate trained policies.")
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed",
+                        help="Directory path for saving models.")
+    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    return parser.parse_args()
+
+
 def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    base_directory_path = "StoreNuria/LPPOsecondSafetySeed"
+    args = parse_args()
+
+    base_directory_path = args.directory_path
     # if you want only to run a seed, specify a range of one number eg range(1, 2)
     seeds = range(1, 21)
-    n_sims = 100
+    n_sims = args.n_sims
     evaluate_policies_across_seeds(base_directory_path, seeds, n_sims)
 
 

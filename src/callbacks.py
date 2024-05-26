@@ -7,19 +7,31 @@ import numpy as np
 
 
 class Callback(ABC):
+    """
+    Abstract base class for callbacks used in the PPO and LPPO training process.
+    """
     @abstractmethod
     def __init__(self, *args, **kwargs):
         self.ppo = None
 
     def initiate(self):
         """
-           Method to overload in case you need self.ppo for the constructor. This is needed since you do not have
-           access to qlearn instance on Callback.__init__"""
+        Method to be overloaded if access to the PPO/LPPO instance is needed during construction.
+        """
         pass
 
 
 class UpdateCallback(Callback):
+    """
+    Base class for callbacks that need to perform actions before and after PPO updates.
+    """
     def __init__(self, ppo):
+        """
+        Initialize the update callback with the PPO/LPPO instance.
+
+        Args:
+            ppo: PPO or LPPO instance.
+        """
         self.ppo = ppo
         self.update_metrics = None
 
@@ -33,7 +45,20 @@ class UpdateCallback(Callback):
 
 
 class AnnealEntropy(UpdateCallback):
+    """
+    Callback for annealing the entropy coefficient during training.
+    """
     def __init__(self, ppo, base_value=1.0, final_value=0.1, concavity=3.5, type="linear_concave"):
+        """
+        Initialize the entropy annealing callback.
+
+        Args:
+            ppo: PPO/LPPO instance.
+            base_value (float): Initial entropy coefficient.
+            final_value (float): Final entropy coefficient.
+            concavity (float): Concavity parameter for the annealing curve.
+            type (str): Type of annealing ("linear_concave" or "linear").
+        """
         super().__init__(ppo)
         self.concavity = concavity
         self.base_value = base_value
@@ -60,8 +85,18 @@ class AnnealEntropy(UpdateCallback):
 
 # Printing Wrappers:
 class PrintAverageReward(UpdateCallback):
-
+    """
+    Callback for printing the average reward after a specified number of episodes.
+    """
     def __init__(self, ppo, n=100, show_time=False):
+        """
+        Initialize the print average reward callback.
+
+        Args:
+            ppo: PPO/LPPO instance.
+            n (int): Number of episodes after which to print the average reward.
+            show_time (bool): Whether to show the time taken for the episodes.
+        """
         super().__init__(ppo)
         self.n = n
         self.show_time = show_time
@@ -81,7 +116,18 @@ class PrintAverageReward(UpdateCallback):
 
 
 class TensorBoardLogging(UpdateCallback):
+    """
+    Callback for logging training metrics to TensorBoard.
+    """
     def __init__(self, ppo, log_dir, f=1):
+        """
+        Initialize the TensorBoard logging callback.
+
+        Args:
+            ppo: PPO instance.
+            log_dir (str): Directory to save TensorBoard logs.
+            f (int): Frequency of logging.
+        """
         super().__init__(ppo)
         self.writer = SummaryWriter(log_dir=log_dir)
         self.freq = f  # Frequency of logging
@@ -96,7 +142,6 @@ class TensorBoardLogging(UpdateCallback):
         pass
 
     def after_update(self):
-        # TODO: Add a way to log the parameters of the agents individually
         with self.semaphore:
             if self.ppo.run_metrics["ep_count"] % self.freq == 0:
                 th.set_num_threads(1)
