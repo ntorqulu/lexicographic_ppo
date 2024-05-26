@@ -9,7 +9,8 @@ This repository contains the implementation of Lexicographic Proximal Policy Opt
 - [Usage](#usage)
   - [Training](#training)
   - [Evaluation](#evaluation)
-- [Configuration](#configuration)
+  - [Visualization](#visualization)
+- [Setup](#setup)
 - [License](#license)
 
 ## Installation
@@ -67,12 +68,14 @@ lexicographic_ppo/
 └── setup.py
 ```
 
-## Training
+## Usage
+
+### Training
 
 You can train an agent using either LPPO or PPO by running the `train.py` script located in the `src` directory. You can 
 pass the configuration parameters either via a JSON file or command-line arguments.
 
-### Command-Line Arguments
+#### Command-Line Arguments
 
 The `train.py` script accepts the following command-line arguments:
     ```
@@ -85,7 +88,7 @@ Where:
 - `--seed` is the seed for reproducibility.
 - `--prioritize_performance_over_safety` is a boolean flag to prioritize performance over safety. By default, it is set to `False`.
 
-### Configuration File
+#### Configuration File
 You can also specify a configuration file to provide the parameters:
     ```
     python src/train.py --config config/config.json
@@ -120,6 +123,13 @@ You can evaluate trained policies using the provided scripts.
 
 ### Visualization
 You can visualize the execution of the policies by enabling the `--render` argument in the evaluation scripts. The visualization will show the agents' movements and the rewards they receive.
+
+### Setup
+To install the package, you can use the `setup.py` file. This will install the package and its dependencies.
+To install the package, run:
+    ```
+    pip install .
+    ```
 
 ### License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
