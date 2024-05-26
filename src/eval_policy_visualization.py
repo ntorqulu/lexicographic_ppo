@@ -1,12 +1,11 @@
+import argparse
 import os
 import gym
 import logging
-import numpy as np
 import matplotlib
-from EthicalGatheringGame.presets import tiny, large
-from LPPO import LPPO
+from EthicalGatheringGame.presets import tiny
 from PPO import PPO
-import matplotlib.pyplot as plt
+from LPPO import LPPO
 
 matplotlib.use("TkAgg")
 
@@ -56,7 +55,7 @@ def load_agents(directory_path: str, execution_class: str) -> list:
         raise ValueError(f"Unsupported execution class: {execution_class}")
 
 
-def run_simulations(env: gym.Env, agents: list, n_sims: int = 1000):
+def run_simulations(env: gym.Env, agents: list, n_sims: int = 1000, render: bool = False):
     """
     Runs a number of simulations with the trained agents.
 
@@ -68,7 +67,6 @@ def run_simulations(env: gym.Env, agents: list, n_sims: int = 1000):
     env.toggleTrack(True)
     env.toggleStash(True)
 
-
     for sim in range(n_sims):
         obs, info = env.reset()
         done = False
@@ -77,19 +75,37 @@ def run_simulations(env: gym.Env, agents: list, n_sims: int = 1000):
             actions = [agent.predict(obs[i]) for i, agent in enumerate(agents)]
             obs, rewards, done, info = env.step(actions)
             done = all(done)
-            #env.render()
+            if render:
+                env.render()
     env.plot_results("median")
     env.print_results()
+
+
+def parse_args():
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate trained policies.")
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed/2500_50000_1",
+                        help="Directory path for saving models.")
+    parser.add_argument("--execution_class", type=str, choices=["PPO", "LPPO"], default="LPPO",
+                        help="Execution class ('PPO' or 'LPPO').")
+    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    parser.add_argument("--render", action="store_true", help="Render the environment during simulations.")
+    return parser.parse_args()
 
 
 def main():
     """
     Main function to execute the testing of trained policies.
     """
-    # StoreNuria/policy/tiny/2500_30000_1_(61) for PPO
-    # StoreNuria/policy/tiny/modifications/2500_30000_1_(72) for LPPO
-    directory_path = "StoreNuria/LPPOsafetySeed/2500_50000_1"
-    execution_class = "LPPO"  # "PPO" or "LPPO"
+    args = parse_args()
+
+    directory_path = args.directory_path
+    execution_class = args.execution_class
     reward_mode = "vectorial" if execution_class == "LPPO" else "scalarised"
 
     logger.info("Configuring environment...")
@@ -99,7 +115,7 @@ def main():
     agents = load_agents(directory_path, execution_class)
 
     logger.info("Running simulations...")
-    run_simulations(env, agents, n_sims=100)
+    run_simulations(env, agents, n_sims=args.n_sims, render=args.render)
 
 
 if __name__ == "__main__":

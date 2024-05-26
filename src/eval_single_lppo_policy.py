@@ -1,11 +1,5 @@
-import os
-import gym
-import logging
-import numpy as np
-import matplotlib
-from EthicalGatheringGame.presets import tiny
-from PPO import PPO
 import matplotlib.pyplot as plt
+import numpy as np
 
 from eval_policy_visualization import *
 
@@ -34,7 +28,7 @@ def run_simulation(env: gym.Env, agents: list) -> dict:
         actions = [agent.predict(obs[i]) for i, agent in enumerate(agents)]
         obs, rewards, done, info = env.step(actions)
         done = all(done)
-        #print(f"Rewards: {rewards}")
+        # print(f"Rewards: {rewards}")
         for i in range(len(agents)):
             # np.dot with weights [1, 10]
             total_rewards[i] += np.dot(rewards[i], [1, 10])
@@ -151,15 +145,19 @@ def plot_simulation_results(results: dict):
     n_agents = len(results["mean_survival_times"])
     agent_ids = [f"Agent {i}" for i in range(n_agents)]
 
-    plot_single_result("Total Rewards", agent_ids, results["mean_total_rewards"], results["std_total_rewards"], "Reward")
-    plot_single_result("Individual Rewards", agent_ids, results["mean_individual_rewards"], results["std_individual_rewards"],
+    plot_single_result("Total Rewards", agent_ids, results["mean_total_rewards"], results["std_total_rewards"],
+                       "Reward")
+    plot_single_result("Individual Rewards", agent_ids, results["mean_individual_rewards"],
+                       results["std_individual_rewards"],
                        "Reward")
     plot_single_result("Ehical Rewards", agent_ids, results["mean_ethical_rewards"], results["std_ethical_rewards"],
                        "Reward")
-    plot_single_result("Time to Survival", agent_ids, results["mean_survival_times"], results["std_survival_times"], "Time")
+    plot_single_result("Time to Survival", agent_ids, results["mean_survival_times"], results["std_survival_times"],
+                       "Time")
     plot_single_result("R'_E Actions", agent_ids, results["mean_R_E_counts"], results["std_R_E_counts"], "Count")
     plot_single_result("R'_N Actions", agent_ids, results["mean_R_N_counts"], results["std_R_N_counts"], "Count")
-    plot_single_result("Suboptimal Actions", agent_ids, results["mean_suboptimal_counts"], results["std_suboptimal_counts"], "Count")
+    plot_single_result("Suboptimal Actions", agent_ids, results["mean_suboptimal_counts"],
+                       results["std_suboptimal_counts"], "Count")
 
     plt.figure(figsize=(8, 6))
     plt.bar(["Donation Box"], [results["mean_donation_full_time"]], yerr=[results["std_donation_full_time"]], capsize=5)
@@ -187,11 +185,26 @@ def run_simulations(env: gym.Env, agents: list, n_sims: int = 100):
     env.print_results()
 
 
+def parse_args():
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Evaluate trained policies.")
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed/2500_50000_1",
+                        help="Directory path for saving models.")
+    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    return parser.parse_args()
+
+
 def main():
     """
     Main function to configure the environment, load agents, and run simulations.
     """
-    directory_path = "StoreNuria/LPPOsafetySeed/2500_50000_1"
+    args = parse_args()
+    directory_path = args.directory_path
     logger.info("Configuring environment...")
     env = configure_environment("vectorial")
 
@@ -199,7 +212,7 @@ def main():
     agents = load_agents(directory_path, "LPPO")
 
     logger.info("Running simulations...")
-    run_simulations(env, agents, n_sims=1000)
+    run_simulations(env, agents, n_sims=args.n_sims)
 
 
 if __name__ == "__main__":

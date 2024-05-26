@@ -51,8 +51,8 @@ def perform_t_tests(ppo_metrics, lppo_metrics):
 
 
 def main():
-    ppo_directory = "StoreNuria/PPOseed"
-    lppo_directory = "StoreNuria/LPPOsecondSafetySeed"
+    ppo_directory = "src/StoreNuria/policies/PPOseed"
+    lppo_directory = "src/StoreNuria/policies/LPPOSafetySeed"
 
     logger.info("Reading PPO metrics...")
     ppo_metrics = read_metrics(ppo_directory)
