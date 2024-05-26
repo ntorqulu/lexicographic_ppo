@@ -1,6 +1,6 @@
 # Lexicographic Proximal Policy Optimization for Multi-Agent Environments
 
-This repository contains the implementation of Lexicographic Proximal Policy Optimization (LPPO) and Proximal Policy Optimization (PPO) for MultiAgentEthicalGatheringGame. The repository is structured to facilitate easy training, evaluation, and visualization of the policies.
+This repository contains the implementation of Lexicographic Proximal Policy Optimization (LPPO) for the [MultiAgentEthicalGatheringGame](https://github.com/maymac00/MultiAgentEthicalGatheringGame/tree/master) environment. The repository is structured to facilitate easy training, evaluation, and visualization of the policies.
 
 ## Table of Contents
 
