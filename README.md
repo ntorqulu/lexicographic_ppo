@@ -124,14 +124,14 @@ You can evaluate trained policies using the provided scripts.
 ### Visualization
 You can visualize the execution of the policies by enabling the `--render` argument in the evaluation scripts. The visualization will show the agents' movements and the rewards they receive.
 
-### Setup
+## Setup
 To install the package, you can use the `setup.py` file. This will install the package and its dependencies.
 To install the package, run:
     ```
     pip install .
     ```
 
-### License
+## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 
