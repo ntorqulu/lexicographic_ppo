@@ -169,9 +169,9 @@ def parse_args():
         argparse.Namespace: Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(description="Evaluate trained policies.")
-    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/PPOseed/2500_50000_1_(1)",
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/large_csic/large/2500_30000_1",
                         help="Directory path for saving models.")
-    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    parser.add_argument("--n_sims", type=int, default=1000, help="Number of simulations to run.")
     return parser.parse_args()
 
 

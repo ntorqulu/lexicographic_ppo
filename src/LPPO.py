@@ -298,8 +298,8 @@ class LPPO:
 
             # Lagrange multipliers
             for i in range(self.reward_size - 1): # only one iter, 0
-                # only compute the mean of the last 25 losses
-                self.j[k][i] = (-th.tensor(self.recent_losses[k][i])[25:]).mean()
+                # compute the mean of the losses stored
+                self.j[k][i] = (-th.tensor(self.recent_losses[k][i])).mean()
                 # update the lagrange multiplier -> just the mu[k][0] for the first reward is updated
             r = self.reward_size - 1
             for i in range(r):

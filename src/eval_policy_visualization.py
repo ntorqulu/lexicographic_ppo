@@ -3,7 +3,7 @@ import os
 import gym
 import logging
 import matplotlib
-from EthicalGatheringGame.presets import tiny
+from EthicalGatheringGame.presets import tiny, large
 from PPO import PPO
 from LPPO import LPPO
 
@@ -24,12 +24,12 @@ def configure_environment(reward_mode: str) -> gym.Env:
     Returns:
     gym.Env: Configured gym environment.
     """
-    tiny["we"] = [1, 10]
-    tiny["reward_mode"] = reward_mode
-    tiny["inequality_mode"] = "loss"
-    tiny["efficiency"] = [0.85, 0.2]
-    tiny["n_agents"] = 2
-    return gym.make("MultiAgentEthicalGathering-v1", **tiny)
+    large["we"] = [1, 1]
+    large["reward_mode"] = reward_mode
+    large["inequality_mode"] = "loss"
+    large["efficiency"] = [0.85, 0.2]
+    large["n_agents"] = 2
+    return gym.make("MultiAgentEthicalGathering-v1", **large)
 
 
 def load_agents(directory_path: str, execution_class: str) -> list:
@@ -89,7 +89,7 @@ def parse_args():
         argparse.Namespace: Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(description="Evaluate trained policies.")
-    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed/2500_50000_1",
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/large/2500_30000_1",
                         help="Directory path for saving models.")
     parser.add_argument("--execution_class", type=str, choices=["PPO", "LPPO"], default="LPPO",
                         help="Execution class ('PPO' or 'LPPO').")

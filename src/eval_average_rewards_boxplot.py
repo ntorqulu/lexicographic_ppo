@@ -26,7 +26,7 @@ def run_simulation(env: gym.Env, agents: list, execution_class) -> dict:
             if execution_class == "PPO":
                 total_rewards[i] += rewards[i]
             else:
-                total_rewards[i] += np.dot(rewards[i], [1, 10])
+                total_rewards[i] += np.dot(rewards[i], [1, 1])
 
     return {
         "total_rewards": total_rewards

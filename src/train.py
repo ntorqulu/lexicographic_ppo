@@ -34,7 +34,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Initialize agent with custom parameters")
     parser.add_argument("--config", type=str, help="Path to the configuration JSON file")
     parser.add_argument("--we_reward0", type=float, default=1, help="Reward for we[0]")
-    parser.add_argument("--we_reward1", type=float, default=10, help="Reward for we[1]")
+    parser.add_argument("--we_reward1", type=float, default=1, help="Reward for we[1]")
     parser.add_argument("--tot_steps", type=int, default=15000000, help="Total number of steps")
     parser.add_argument("--execution_class", type=str, default=LPPO_CLASS, help="Execution class")
     parser.add_argument("--seed", type=int, default=1, help="Random seed for reproducibility")
