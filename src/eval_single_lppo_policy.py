@@ -30,10 +30,10 @@ def run_simulation(env: gym.Env, agents: list) -> dict:
         done = all(done)
         # print(f"Rewards: {rewards}")
         for i in range(len(agents)):
-            # np.dot with weights [1, 10]
-            total_rewards[i] += np.dot(rewards[i], [1, 10])
+            # np.dot with weights [1, 1]
+            total_rewards[i] += np.dot(rewards[i], [1, 1])
             individual_rewards[i] += rewards[i][0]
-            ethical_rewards[i] += rewards[i][1] * 10
+            ethical_rewards[i] += rewards[i][1] * 1
             R_missedEthical_counts[i] += info["R'_E"][i]
             R_nonEthical_counts[i] += info["R'_N"][i]
 
@@ -193,9 +193,9 @@ def parse_args():
         argparse.Namespace: Parsed command line arguments.
     """
     parser = argparse.ArgumentParser(description="Evaluate trained policies.")
-    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/LPPOSafetySeed/2500_50000_1",
+    parser.add_argument("--directory_path", type=str, default="src/StoreNuria/large/2500_30000_1_(1)",
                         help="Directory path for saving models.")
-    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    parser.add_argument("--n_sims", type=int, default=1000, help="Number of simulations to run.")
     return parser.parse_args()
 
 

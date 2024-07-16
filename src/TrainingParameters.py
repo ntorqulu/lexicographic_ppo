@@ -36,7 +36,7 @@ class TrainingParameters:
     h_layers: int = 2  # Number of hidden layers
     # from multireward
     we_reward0: float = 1  # Weight for the first reward
-    we_reward1: float = 10  # Weight for the second reward
+    we_reward1: float = 1  # Weight for the second reward
     execution_class: str = "LPPO"  # Execution class, default to LPPO
     # control param
     eval_mode: bool = False  # Whether to run in evaluation mode

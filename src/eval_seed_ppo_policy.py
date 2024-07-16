@@ -172,7 +172,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate trained policies.")
     parser.add_argument("--directory_path", type=str, default="src/StoreNuria/policies/PPOseed",
                         help="Directory path for saving models.")
-    parser.add_argument("--n_sims", type=int, default=100, help="Number of simulations to run.")
+    parser.add_argument("--n_sims", type=int, default=1000, help="Number of simulations to run.")
     return parser.parse_args()
 
 
